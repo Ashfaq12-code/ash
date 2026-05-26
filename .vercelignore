@@ -1,0 +1,8 @@
+node_modules
+server
+*.log
+.vscode
+.env
+.env.local
+client/.next
+client/node_modules

@@ -1,0 +1,1806 @@
+==========
+
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Send, ScanFace, Terminal, ShieldAlert, ShieldCheck, Cpu, Video, Phone, Users, LayoutDashboard, Settings, MoreVertical, MessageSquare, Lock, PhoneCall, X, Image as ImageIcon, Smile, User, Gamepad2, Swords, Zap, Wallet } from "lucide-react";
+import { io, Socket } from "socket.io-client";
+import CryptoJS from 'crypto-js';
+import Peer from 'simple-peer';
+import dynamic from 'next/dynamic';
+
+// Dynamic import for face-api and emoji-picker to avoid SSR issues
+const faceapi = typeof window !== "undefined" ? require('@vladmandic/face-api/dist/face-api.esm.js') : null;
+const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false });
+const NeuralGameWorld = dynamic(() => import('../components/NeuralGameWorld'), { ssr: false });
+
+const SECRET_KEY = "NEOTALK_AES_256_KEY";
+
+interface Message {
+  id: string;
+  senderName: string;
+  senderId?: string;
+  targetId?: string;
+  text: string;
+  timestamp: Date;
+  isUser: boolean;
+  isSystem?: boolean;
+  isStreaming?: boolean;
+  isImage?: boolean;
+  isLudoReady?: boolean;
+  betAmount?: number;
+  roomId?: string;
+}
+
+export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [username, setUsername] = useState("");
+  const [avatarSeed, setAvatarSeed] = useState(""); // User's custom avatar seed
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [isAutoAuthenticating, setIsAutoAuthenticating] = useState(true);
+
+  useEffect(() => {
+    // Dynamically connect to the same host on port 5000
+    const socketHost = window.location.hostname;
+    const newSocket = io(`http://${socketHost}:5000`);
+    setSocket(newSocket);
+
+    // PERSISTENCE: Check for existing session
+    const storedUsername = localStorage.getItem("aura_username");
+    if (storedUsername) {
+      setUsername(storedUsername);
+      const attemptAuth = () => {
+        console.log("[AUTH] Auto-authenticating with stored username:", storedUsername);
+        newSocket.emit("biometric_auth", { forceUsername: storedUsername });
+      };
+
+      if (newSocket.connected) {
+        attemptAuth();
+      } else {
+        newSocket.on("connect", attemptAuth);
+      }
+
+      // Fallback: If auth takes too long, show login
+      const fallback = setTimeout(() => {
+        console.warn("[AUTH] Auto-authentication timed out, falling back to manual login.");
+        setIsAutoAuthenticating(false);
+      }, 8000); // Increased to 8s for reliability
+      newSocket.once("auth_success", () => clearTimeout(fallback));
+    } else {
+      setIsAutoAuthenticating(false);
+    }
+
+    const onAuthSuccess = (data: any) => {
+      setUsername(data.username);
+      setIsAuthenticated(true);
+      localStorage.setItem("aura_username", data.username);
+      setIsAutoAuthenticating(false);
+    };
+
+    newSocket.on("auth_success", onAuthSuccess);
+
+    return () => {
+      newSocket.off("auth_success", onAuthSuccess);
+      newSocket.close();
+    };
+  }, []);
+
+  const handleAuth = (name: string) => {
+    setUsername(name);
+    setIsAuthenticated(true);
+    localStorage.setItem("aura_username", name);
+  };
+
+  if (isAutoAuthenticating && !isAuthenticated) {
+    return (
+      <div className="bg-[#050810] h-screen w-full flex flex-col items-center justify-center">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+          className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full mb-6 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+        />
+        <h2 className="text-emerald-500 font-mono tracking-[0.3em] text-sm animate-pulse">RECONNECTING TO NEURAL GRID...</h2>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#0b0f19] text-white font-sans overflow-hidden h-screen w-full selection:bg-emerald-500/30">
+      <AnimatePresence mode="wait">
+        {!isAuthenticated ? (
+          <BiometricLogin key="login" socket={socket} onAuth={handleAuth} />
+        ) : (
+          <MainDashboard key="dashboard" socket={socket} username={username} setUsername={setUsername} avatarSeed={avatarSeed} setAvatarSeed={setAvatarSeed} />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function BiometricLogin({ socket, onAuth }: { socket: Socket | null, onAuth: (name: string) => void }) {
+  const [loginMode, setLoginMode] = useState<"face" | "clap">("face");
+
+  // Face Auth state
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [scanStatus, setScanStatus] = useState("LOADING BIOMETRIC MODELS...");
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanStage, setScanStage] = useState<"loading" | "idle" | "align" | "rotate" | "success" | "error">("loading");
+  const [progress, setProgress] = useState(0);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [isWrongMove, setIsWrongMove] = useState(false);
+  const [litSegments, setLitSegments] = useState<Set<number>>(new Set());
+  const [activeSegment, setActiveSegment] = useState<number | null>(null);
+  const litRef = useRef<Set<number>>(new Set());
+  const alarmRef = useRef<HTMLAudioElement | null>(null);
+
+  // Clap Auth state
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [clapPower, setClapPower] = useState(0);
+  const [isClapListening, setIsClapListening] = useState(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const dataArrayRef = useRef<Uint8Array | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const clapReqRef = useRef<number | null>(null);
+
+  const successChime = typeof window !== "undefined" ? new Audio("https://assets.mixkit.co/active_storage/sfx/2019/2019-preview.mp3") : null;
+  const playSuccess = () => { successChime?.play().catch(() => { }); };
+
+  useEffect(() => {
+    alarmRef.current = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+    alarmRef.current.loop = true;
+    return () => {
+      alarmRef.current?.pause();
+      alarmRef.current = null;
+      if (clapReqRef.current) cancelAnimationFrame(clapReqRef.current);
+      if (audioContextRef.current) audioContextRef.current.close();
+      if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop());
+    };
+  }, []);
+
+  const speak = (text: string) => {
+    window.speechSynthesis.cancel();
+    const msg = new SpeechSynthesisUtterance(text);
+    msg.rate = 0.9;
+    msg.pitch = 1.1;
+    window.speechSynthesis.speak(msg);
+  };
+
+  useEffect(() => {
+    const loadModels = async () => {
+      if (modelsLoaded) return;
+      const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+      await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+      setModelsLoaded(true);
+      setScanStatus("TAP TO INITIATE SECURE LINK");
+      setScanStage("idle");
+    };
+    if (loginMode === "face") loadModels();
+  }, [modelsLoaded, loginMode]);
+
+  const startClapDetection = async () => {
+    if (!socket || isClapListening) return;
+    try {
+      setScanStatus("INITIALIZING SONIC SENSORS...");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = audioCtx;
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      dataArrayRef.current = dataArray;
+
+      setIsClapListening(true);
+      setScanStatus("CLAP HANDS TO AUTHENTICATE");
+      speak("Sonic sensors active. Please clap to authorize.");
+      setClapPower(0);
+
+      let lastClapTime = 0;
+      let power = 0;
+
+      const checkAudio = () => {
+        if (!analyserRef.current || !dataArrayRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+
+        let sum = 0;
+        for (let i = 0; i < dataArrayRef.current.length; i++) {
+          sum += dataArrayRef.current[i];
+        }
+        const average = sum / dataArrayRef.current.length;
+        const level = Math.min(100, (average / 150) * 100);
+        setAudioLevel(level);
+
+        const now = Date.now();
+        // Detect a clap (sharp spike)
+        if (level > 60 && now - lastClapTime > 300) {
+          lastClapTime = now;
+          power += 25; // 4 claps to login
+          if (power >= 100) {
+            power = 100;
+            setClapPower(100);
+            setScanStatus("SONIC SIGNATURE ACCEPTED");
+            playSuccess();
+            speak("Sonic signature accepted. Welcome Agent.");
+            setTimeout(() => {
+              socket?.emit("biometric_auth", {});
+            }, 1000);
+            return; // Stop checking
+          }
+          setClapPower(power);
+        } else if (now - lastClapTime > 2000) {
+          // decay if too slow
+          power = Math.max(0, power - 0.5);
+          setClapPower(power);
+        }
+
+        if (audioContextRef.current?.state === "running") {
+          clapReqRef.current = requestAnimationFrame(checkAudio);
+        }
+      };
+      checkAudio();
+    } catch (e) {
+      console.error(e);
+      setScanStatus("MIC ACCESS DENIED OR UNAVAILABLE");
+      speak("Microphone access is denied.");
+    }
+  };
+
+  const stopClapDetection = () => {
+    setIsClapListening(false);
+    if (clapReqRef.current) cancelAnimationFrame(clapReqRef.current);
+    if (audioContextRef.current) audioContextRef.current.close();
+    if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop());
+    setAudioLevel(0);
+  };
+
+  useEffect(() => {
+    if (loginMode === "clap") {
+      if (videoRef.current && videoRef.current.srcObject) {
+        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+        tracks.forEach(t => t.stop());
+      }
+      setIsScanning(false);
+      startClapDetection();
+    } else {
+      stopClapDetection();
+      setScanStatus(modelsLoaded ? "TAP TO INITIATE SECURE LINK" : "LOADING BIOMETRIC MODELS...");
+    }
+  }, [loginMode]);
+
+  const startScan = async () => {
+    if (!socket || !modelsLoaded || isScanning || loginMode !== "face") return;
+
+    try {
+      setScanStatus("NODE SEARCH INITIATED...");
+      if (videoRef.current && videoRef.current.srcObject) {
+        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+        tracks.forEach(t => { t.stop(); t.enabled = false; });
+        videoRef.current.srcObject = null;
+      }
+
+      if (!navigator.mediaDevices) throw new Error("HARDWARE_API_UNAVAILABLE");
+      let stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setIsScanning(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await new Promise(r => setTimeout(r, 200));
+        await videoRef.current.play();
+      }
+
+      setScanStage("align");
+      setScanStatus("LINK SECURED. ALIGNING...");
+      speak("Secure link established.");
+    } catch (err: any) {
+      console.error("Hardware Node Error:", err);
+      setIsScanning(false);
+      setScanStatus("HARDWARE LINK FAILED");
+      return;
+    }
+
+    let currentStage = "align";
+    let p = 0;
+    let faceMissingCount = 0;
+
+    // Reset rotation tracker
+    litRef.current.clear();
+    setLitSegments(new Set());
+    setActiveSegment(null);
+    setProgress(0);
+
+    const detectLoop = async () => {
+      if (!videoRef.current || loginMode !== "face") return;
+      const detection = await faceapi.detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.15 })).withFaceLandmarks();
+
+      if (!detection || detection.detection.score < 0.2) {
+        faceMissingCount++;
+        if (faceMissingCount > 60) {
+          setActiveSegment(null);
+          if (currentStage !== "error") {
+            currentStage = "error";
+            setScanStage("error");
+            setScanStatus("⚠️ UNAUTHORIZED");
+            setIsWrongMove(true);
+          }
+        }
+      } else {
+        faceMissingCount = 0;
+        if (currentStage === "error") {
+          currentStage = "align";
+          setScanStage("align");
+          setScanStatus("✅ FACE SECURED: INITIALIZING LINK");
+          setIsWrongMove(false);
+          speak("Face secured. Linking nodes.");
+        }
+
+        const box = detection.detection.box;
+        const nose = detection.landmarks.getNose()[0];
+
+        if (currentStage === "align") {
+          // Align phase - face should be roughly centered
+          p = Math.min(25, p + 1.0);
+          setProgress(p);
+          if (p >= 25) {
+            currentStage = "rotate";
+            setScanStage("rotate");
+            playSuccess();
+            speak("Slowly rotate your head in a circle.");
+            setScanStatus("SLOWLY ROTATE HEAD");
+          }
+        } else if (currentStage === "rotate") {
+          // Calculate rotation relative to face box center
+          const faceCenterX = box.x + box.width / 2;
+          const faceCenterY = box.y + box.height / 2;
+          const dx = nose.x - faceCenterX;
+          const dy = nose.y - faceCenterY;
+
+          // distance magnitude divided by box width to get a scale-independent metric
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          const rotationMagnitude = distance / box.width;
+
+          if (rotationMagnitude > 0.04) {
+            let angle = Math.atan2(dy, dx) * (180 / Math.PI);
+            angle = angle + 90; // Adjust so 0 is top
+            if (angle < 0) angle += 360;
+
+            const segmentIndex = Math.floor(angle / 10) % 36;
+            setActiveSegment(segmentIndex);
+
+            const oldSize = litRef.current.size;
+            // Light up current and neighbors for a smooth sweep
+            litRef.current.add(segmentIndex);
+            litRef.current.add((segmentIndex + 1) % 36);
+            litRef.current.add((segmentIndex - 1 + 36) % 36);
+
+            if (litRef.current.size !== oldSize) {
+              const newSize = litRef.current.size;
+              setLitSegments(new Set(litRef.current));
+              p = 25 + Math.floor((newSize / 36) * 75);
+              setProgress(p);
+
+              if (newSize >= 36) {
+                setActiveSegment(null);
+                currentStage = "success";
+                setScanStage("success");
+                setScanStatus("IDENTITY VERIFIED. ACCESS GRANTED.");
+                playSuccess();
+                speak("Identity verified. Welcome back, Agent.");
+                setTimeout(() => { socket?.emit("biometric_auth", {}); }, 1500);
+              }
+            }
+          } else {
+            setActiveSegment(null);
+          }
+        }
+      }
+      requestAnimationFrame(detectLoop);
+    };
+    detectLoop();
+  };
+
+  const radius = 140;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (progress / 100) * circumference;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ scale: 1.1, opacity: 0 }} className="flex flex-col items-center justify-center h-full bg-[#050810] relative overflow-hidden">
+
+      {loginMode === "clap" && (
+        <>
+          <motion.div initial={{ x: -100, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -100, opacity: 0 }} className="absolute left-8 top-1/2 -translate-y-1/2 flex flex-col items-center gap-4">
+            <div className="text-emerald-500 font-mono text-[10px] uppercase tracking-widest writing-vertical-lr rotate-180 flex items-center gap-2">Sonic Power <span>{Math.round(audioLevel)}%</span></div>
+            <div className="w-6 h-96 bg-black/50 border border-emerald-500/20 rounded-full overflow-hidden flex flex-col justify-end relative shadow-[0_0_20px_rgba(16,185,129,0.1)]">
+              <div className="w-full bg-emerald-500 transition-all duration-75 shadow-[0_0_20px_rgba(16,185,129,0.8)]" style={{ height: `${audioLevel}%` }}></div>
+              {/* Tick marks */}
+              {[20, 40, 60, 80].map(p => <div key={p} className="absolute w-full h-[1px] bg-emerald-900/50" style={{ bottom: `${p}%` }} />)}
+            </div>
+          </motion.div>
+          <motion.div initial={{ x: 100, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 100, opacity: 0 }} className="absolute right-8 top-1/2 -translate-y-1/2 flex flex-col items-center gap-4">
+            <div className="text-emerald-500 font-mono text-[10px] uppercase tracking-widest writing-vertical-lr rotate-180 flex items-center gap-2">Auth Progress <span>{Math.round(clapPower)}%</span></div>
+            <div className="w-6 h-96 bg-black/50 border border-emerald-500/20 rounded-full overflow-hidden flex flex-col justify-end relative shadow-[0_0_20px_rgba(16,185,129,0.1)]">
+              <div className="w-full bg-gradient-to-t from-emerald-500 to-cyan-400 transition-all duration-300 shadow-[0_0_20px_rgba(16,185,129,0.8)]" style={{ height: `${clapPower}%` }}></div>
+              {[25, 50, 75].map(p => <div key={p} className="absolute w-full h-[1px] bg-cyan-900/50" style={{ bottom: `${p}%` }} />)}
+            </div>
+          </motion.div>
+        </>
+      )}
+
+      <AnimatePresence>
+        {(scanStage === 'error' || isWrongMove) && loginMode === "face" && (
+          <motion.div className="fixed inset-0 bg-red-900/10 pointer-events-none z-[100] animate-[pulse_0.5s_infinite]" />
+        )}
+      </AnimatePresence>
+
+      <div className="mb-12 text-center z-10">
+        <h1 className="text-3xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-500 mb-2">NEOTALK SECURE</h1>
+        <p className="text-gray-500 font-mono text-sm tracking-widest uppercase">{loginMode === "face" ? "Biometric Authentication" : "Sonic Authorization"}</p>
+      </div>
+
+      <div className="relative flex items-center justify-center w-[400px] h-[400px] z-10 my-8">
+        {/* Neural Network Glowing Mesh (Orbital Background) */}
+        <div className="absolute inset-0 z-0 pointer-events-none flex items-center justify-center">
+          <svg viewBox="0 0 400 400" className="absolute w-full h-full animate-[spin_20s_linear_infinite] opacity-60">
+            <circle cx="200" cy="200" r="180" fill="none" stroke="#10b981" strokeWidth="1" strokeDasharray="2 12" />
+            <circle cx="200" cy="20" r="4" fill="#34d399" className="shadow-[0_0_10px_#34d399] animate-pulse" />
+            <circle cx="380" cy="200" r="2" fill="#34d399" />
+            <circle cx="20" cy="200" r="3" fill="#34d399" />
+            <circle cx="200" cy="380" r="3" fill="#34d399" />
+            <path d="M200 20 L380 200 L200 380 L20 200 Z" fill="none" stroke="#059669" strokeWidth="0.5" strokeDasharray="5 15" opacity="0.3" />
+          </svg>
+          <svg viewBox="0 0 400 400" className="absolute w-[360px] h-[360px] animate-[spin_15s_reverse_linear_infinite] opacity-50">
+            <circle cx="200" cy="200" r="160" fill="none" stroke="#34d399" strokeWidth="0.5" strokeDasharray="4 16" />
+            <path d="M 200 40 Q 360 200 200 360 Q 40 200 200 40" fill="none" stroke="#10b981" strokeWidth="0.5" opacity="0.5" />
+          </svg>
+          <div className="absolute w-[310px] h-[310px] rounded-full border border-emerald-500/20 shadow-[0_0_50px_rgba(16,185,129,0.3)] animate-[pulse_2s_infinite] pointer-events-none"></div>
+        </div>
+
+        {loginMode === "face" ? (
+          <motion.div className="relative group cursor-pointer flex items-center justify-center w-[270px] h-[270px] z-10" onClick={startScan}>
+            <svg className="absolute inset-[-25px] w-[320px] h-[320px] pointer-events-none z-20" viewBox="0 0 320 320">
+              {Array.from({ length: 36 }).map((_, i) => {
+                const isLit = scanStage === 'loading' || scanStage === 'idle' ? false : litSegments.has(i);
+
+                let distanceToActive = 999;
+                if (activeSegment !== null && scanStage === 'rotate') {
+                  distanceToActive = Math.min(
+                    Math.abs(i - activeSegment),
+                    Math.abs(i - (activeSegment + 36)),
+                    Math.abs(i - (activeSegment - 36))
+                  );
+                }
+                const isActiveCenter = distanceToActive === 0;
+                const isActiveNeighbor = distanceToActive === 1;
+
+                const angle = (i * 10 - 90) * (Math.PI / 180);
+                const cx = 160;
+                const cy = 160;
+
+                const r1 = isActiveCenter ? 126 : isActiveNeighbor ? 129 : 132;
+                const r2 = isActiveCenter ? 154 : isActiveNeighbor ? 151 : 148;
+
+                const x1 = cx + r1 * Math.cos(angle);
+                const y1 = cy + r1 * Math.sin(angle);
+                const x2 = cx + r2 * Math.cos(angle);
+                const y2 = cy + r2 * Math.sin(angle);
+
+                let strokeClass = 'stroke-white/10';
+                if (isLit) {
+                  if (scanStage === 'error') strokeClass = 'stroke-red-500 drop-shadow-[0_0_8px_rgba(239,68,68,0.8)]';
+                  else strokeClass = 'stroke-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.8)]';
+                }
+                if (isActiveCenter || isActiveNeighbor) {
+                  strokeClass = 'stroke-cyan-300 drop-shadow-[0_0_15px_rgba(34,211,238,1)]';
+                }
+
+                return (
+                  <line
+                    key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+                    className={`${isActiveCenter ? 'stroke-[8px]' : isActiveNeighbor ? 'stroke-[7px]' : 'stroke-[6px]'} transition-all duration-100 ease-out ${strokeClass}`}
+                    strokeLinecap="round"
+                  />
+                );
+              })}
+            </svg>
+            <div className={`relative w-full h-full rounded-full overflow-hidden shadow-[0_0_40px_rgba(0,0,0,0.8)] transition-all duration-500 bg-[#0a101d] border-4 ${scanStage === 'error' ? 'border-red-500/50' : 'border-emerald-500/20'}`}>
+              <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover transition-all duration-700 ${isScanning ? "scale-110 brightness-125" : "grayscale opacity-30"}`}></video>
+              {!isScanning && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm hover:bg-black/40 transition-all">
+                  <ScanFace className="w-16 h-16 text-emerald-400 mb-2 animate-pulse drop-shadow-[0_0_15px_rgba(52,211,153,0.8)]" />
+                </div>
+              )}
+            </div>
+          </motion.div>
+        ) : (
+          <motion.div className="relative group cursor-pointer flex flex-col items-center justify-center w-[270px] h-[270px] z-10" onClick={!isClapListening ? startClapDetection : undefined}>
+            <svg className="absolute inset-[-25px] w-[320px] h-[320px] transform pointer-events-none z-20 -rotate-90" viewBox="0 0 320 320">
+              <circle cx="160" cy="160" r={140} className="fill-none stroke-[8px] transition-colors duration-500 stroke-white/10" strokeDasharray="6 8" />
+              <circle cx="160" cy="160" r={140} className="fill-none stroke-[8px] transition-all duration-300 stroke-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.8)]" strokeDasharray={`${circumference} ${circumference}`} strokeDashoffset={circumference - (clapPower / 100) * circumference} />
+            </svg>
+            <div className="relative w-full h-full rounded-full overflow-hidden shadow-[0_0_40px_rgba(0,0,0,0.8)] bg-[#0a101d] border-4 border-cyan-500/20 flex flex-col items-center justify-center">
+              {/* Background faded hands */}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="w-32 h-32 text-white/10 absolute">
+                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+              </svg>
+              {/* Foreground filled hands masked by height */}
+              <div className="w-32 h-32 absolute bottom-[70px] overflow-hidden" style={{ height: `${(clapPower / 100) * 128}px`, transition: 'height 0.2s linear' }}>
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-32 h-32 text-emerald-400 absolute bottom-0 shadow-[0_0_20px_rgba(52,211,153,0.8)]" style={{ filter: 'drop-shadow(0 0 15px #34d399)' }}>
+                  <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+                </svg>
+              </div>
+              <div className="absolute font-mono text-cyan-400 font-bold tracking-widest text-xl mt-40 drop-shadow-[0_0_10px_rgba(34,211,238,0.8)]">{Math.round(clapPower)}%</div>
+              {!isClapListening && <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm font-bold tracking-widest text-emerald-400 uppercase">TAP TO INITIATE</div>}
+            </div>
+          </motion.div>
+        )}
+      </div>
+
+      <div className="mt-12 text-center h-32 z-10 flex flex-col items-center">
+        <motion.div className={`font-mono tracking-widest text-sm font-bold ${scanStage === 'success' || clapPower === 100 ? 'text-emerald-400' : 'text-cyan-400'}`}>
+          {scanStatus}
+        </motion.div>
+        <div className="mt-8 flex gap-4">
+          <button onClick={() => setLoginMode("face")} className={`px-6 py-3 border rounded-xl text-xs transition-all font-mono uppercase ${loginMode === "face" ? "border-emerald-500 text-emerald-400 bg-emerald-500/10" : "border-white/10 text-gray-500"}`}>Facial Scan</button>
+          <button onClick={() => setLoginMode("clap")} className={`px-6 py-3 border rounded-xl text-xs transition-all font-mono uppercase ${loginMode === "clap" ? "border-cyan-500 text-cyan-400 bg-cyan-500/10" : "border-white/10 text-gray-500"}`}>Sonic Auth</button>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSeed }: { socket: Socket | null, username: string, setUsername: (name: string) => void, avatarSeed: string, setAvatarSeed: (seed: string) => void }) {
+  const [activeTab, setActiveTab] = useState<'chat' | 'directory' | 'admin' | 'profile' | 'survival' | 'wallet' | 'shop'>('chat');
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null); // null = Global Chat
+  const selectedChatIdRef = useRef(selectedChatId);
+  useEffect(() => { selectedChatIdRef.current = selectedChatId; }, [selectedChatId]);
+
+  const [walletInfo, setWalletInfo] = useState<any>({ wallet: 0, history: [] });
+
+  const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
+  const [typingStatus, setTypingStatus] = useState<string | null>(null);
+  const [unreadMap, setUnreadMap] = useState<Record<string, boolean>>({});
+  const [lastMessageMap, setLastMessageMap] = useState<Record<string, number>>({});
+  const [incomingCall, setIncomingCall] = useState<{ signal: any, from: string, callerName: string } | null>(null);
+  const [activeCall, setActiveCall] = useState<{ userId: string, username: string, isCaller: boolean, isAi?: boolean, initialSignal?: any } | null>(null);
+  const [incomingLudoInvites, setIncomingLudoInvites] = useState<any[]>([]);
+  const [systemStats, setSystemStats] = useState({ totalMessages: 0, aiInterventions: 0, activeCalls: 0 });
+  const [toast, setToast] = useState<{ id: string, name: string, text: string } | null>(null);
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [pendingAgents, setPendingAgents] = useState<any[]>([]);
+  const [selectedLudoRoom, setSelectedLudoRoom] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on('connect', () => {
+      if (username) {
+        socket.emit("biometric_auth", { forceUsername: username });
+      }
+    });
+
+    // Poll for users if the list is empty (fallback for initial missed emission)
+    const pollInterval = setInterval(() => {
+      if (onlineUsers.length === 0) {
+        socket.emit("get_users"); // We'll add this handler to the server
+      }
+    }, 2000);
+
+    socket.emit("get_wallet");
+    socket.on("wallet_update", (data) => {
+      setWalletInfo(data);
+      if (data.history && data.history.length === 1 && data.history[0].reason === 'First Login Bonus' && !(window as any).bonusSoundPlayed) {
+        (window as any).bonusSoundPlayed = true;
+        setTimeout(() => {
+          const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3");
+          audio.play().catch(() => { });
+          setToast({ id: 'sys_bonus', name: "AURA BANK", text: `💳 WELCOME BONUS GRANTED: 15,000 LKR` });
+        }, 1000);
+      }
+    });
+
+    socket.on("update_users", (users) => setOnlineUsers(users));
+    socket.on("update_stats", (stats) => setSystemStats(stats));
+
+    socket.on("typing_start", (data) => setTypingStatus(`${data.senderName} is thinking...`));
+    socket.on("typing_end", () => setTypingStatus(null));
+
+    socket.on("receive_message", (msg) => {
+      if (msg.senderId && msg.senderId !== socket.id) {
+        setLastMessageMap((p: any) => ({ ...p, [msg.senderId]: Date.now(), [`text_${msg.senderId}`]: msg.text }));
+
+        let decryptedText = msg.text;
+        if (msg.isEncrypted) {
+          try {
+            const bytes = CryptoJS.AES.decrypt(msg.text, SECRET_KEY);
+            decryptedText = bytes.toString(CryptoJS.enc.Utf8);
+          } catch (err) { decryptedText = "Encrypted Message"; }
+        }
+
+        if (msg.senderId !== selectedChatIdRef.current && msg.id && !msg.id.startsWith("sys_")) {
+          try {
+            const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3");
+            audio.play().catch(() => { });
+          } catch (e) { }
+          setToast({ id: msg.senderId, name: msg.senderName, text: decryptedText });
+          setTimeout(() => setToast(null), 3000); // 3 second popup duration
+        }
+      }
+    });
+
+    socket.on("stream_chunk", (data) => {
+      // We'll update the preview as it streams
+      setLastMessageMap((p: any) => ({ ...p, [`text_${data.senderId}`]: (p[`text_${data.senderId}`] || "") + data.text }));
+    });
+
+    socket.on("incoming_call", (data) => {
+      setIncomingCall(data);
+    });
+
+    socket.on("ludo_invite_received", (data) => {
+      setIncomingLudoInvites(prev => {
+        if (prev.find(i => i.roomId === data.roomId)) return prev;
+        return [...prev, data];
+      });
+    });
+
+    socket.on("call_ended", () => {
+      setActiveCall(null);
+      setIncomingCall(null);
+    });
+
+    socket.on("agent_joined_game", (data) => {
+      setPendingAgents(p => [...p, { id: data.agentId || 'agent', username: data.agentName }]);
+      setActiveTab('survival');
+    });
+
+    socket.on("force_open_ludo", (data) => {
+      setSelectedLudoRoom(data.roomId);
+      setActiveTab('survival');
+      if (data.targetUser) {
+        setPendingAgents(p => {
+          if (!p.find(u => u.id === data.targetUser.id)) {
+            return [...p, data.targetUser];
+          }
+          return p;
+        });
+      }
+    });
+
+    return () => {
+      clearInterval(pollInterval);
+      socket.off("update_users");
+      socket.off("update_stats");
+      socket.off("incoming_call");
+      socket.off("ludo_invite_received");
+      socket.off("call_ended");
+      socket.off("agent_joined_game");
+      socket.off("force_open_ludo");
+      socket.off("wallet_update");
+    };
+  }, [socket, onlineUsers.length]);
+
+  const startCall = (user: any) => {
+    setActiveCall({ userId: user.id, username: user.username, isCaller: true, isAi: user.id?.startsWith("agent_") });
+  };
+
+  const acceptCall = () => {
+    if (!incomingCall) return;
+    setActiveCall({ userId: incomingCall.from, username: incomingCall.callerName, isCaller: false, initialSignal: incomingCall.signal });
+    setIncomingCall(null);
+  };
+
+  const declineCall = () => {
+    if (incomingCall) {
+      socket?.emit("end_call", { to: incomingCall.from });
+      setIncomingCall(null);
+    }
+  };
+
+  // selectedChatId is now at the top of the component
+
+  return (
+    <div className="flex h-screen bg-[#090d16] overflow-hidden">
+      {/* Welcome Modal */}
+      <AnimatePresence>
+        {showWelcome && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-[#050810]/90 backdrop-blur-sm p-4"
+          >
+            <div className="bg-[#0f1b29] border border-emerald-500 rounded-2xl p-8 max-w-xl w-full shadow-[0_0_50px_rgba(16,185,129,0.2)] text-center">
+              <h2 className="text-3xl font-black text-white mb-2">INITIALIZING AURA CHATBOT</h2>
+              <div className="inline-block px-4 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 font-mono text-sm mb-6">SYSTEM ARCHITECT: ASHFAQ</div>
+              <p className="text-gray-300 mb-6 text-lg leading-relaxed">
+                Ashfaq is an elite <strong className="text-emerald-400">Full Stack Web Developer</strong>. His unparalleled expertise in engineering complex, scalable, and secure real-time systems has brought this neural network online.
+              </p>
+              <button
+                onClick={() => setShowWelcome(false)}
+                className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl font-bold transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+              >
+                ENTER SECURE GRID
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Sidebar Navigation */}
+      <nav className={`w-16 md:w-20 border-r border-white/5 bg-[#050810] flex flex-col items-center py-6 shrink-0 transition-all duration-500 ${activeTab === "survival" ? "-translate-x-full opacity-0 pointer-events-none !w-0" : "translate-x-0 opacity-100"}`}>
+        <Cpu className="w-8 h-8 text-emerald-500 mb-8" />
+        <div className="flex-1 flex flex-col gap-6">
+          <button onClick={() => setActiveTab('chat')} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'chat' ? 'bg-emerald-500 text-black shadow-[0_0_20px_rgba(16,185,129,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Neural Chat"><MessageSquare /></button>
+          <button onClick={() => setActiveTab('directory')} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'directory' ? 'bg-amber-500 text-black shadow-[0_0_20px_rgba(245,158,11,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Agents Directory"><Users /></button>
+          <button onClick={() => setActiveTab('survival')} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'survival' ? 'bg-purple-500 text-black shadow-[0_0_20px_rgba(168,85,247,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Survival Protocol"><Gamepad2 /></button>
+          <button onClick={() => setActiveTab('wallet')} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'wallet' ? 'bg-amber-400 text-black shadow-[0_0_20px_rgba(251,191,36,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Neural Wallet"><Wallet /></button>
+          <button onClick={() => setActiveTab('shop')} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'shop' ? 'bg-emerald-400 text-black shadow-[0_0_20px_rgba(52,211,153,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Neural Shop"><Swords /></button>
+          <button onClick={() => setActiveTab('admin')} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'admin' ? 'bg-cyan-500 text-black shadow-[0_0_20px_rgba(6,182,212,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="System Dashboard"><LayoutDashboard /></button>
+        </div>
+
+        <div className="mt-auto flex flex-col gap-4 items-center mb-4">
+          <button
+            onClick={() => setActiveTab('profile')}
+            className={`w-12 h-12 rounded-2xl border-2 flex items-center justify-center transition-all overflow-hidden ${activeTab === 'profile' ? 'border-emerald-500 bg-emerald-500/10 shadow-[0_0_20px_rgba(16,185,129,0.3)]' : 'border-white/10 hover:border-white/20'}`}
+            title="Edit Profile"
+          >
+            <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${avatarSeed || username}`} alt="avatar" className="w-10 h-10 rounded-xl" />
+          </button>
+        </div>
+      </nav>
+
+      {/* WhatsApp Style Chat Sidebar */}
+      {activeTab === 'chat' && (
+        <div className="w-full md:w-80 border-r border-white/5 bg-[#0b121f] flex flex-col shrink-0 overflow-hidden">
+          <div className="p-6">
+            <h2 className="text-xl font-bold text-white mb-4">Chats</h2>
+            <div className="relative">
+              <input type="text" placeholder="Search or start new chat" className="w-full bg-[#050810] border border-white/5 rounded-full py-2 px-4 text-xs text-gray-300 outline-none focus:border-emerald-500/50" />
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-2 space-y-1">
+            <ChatListItem
+              active={selectedChatId === null}
+              onClick={() => setSelectedChatId(null)}
+              name="Global Encrypted Network"
+              lastMsg="Encrypted broadcast active..."
+              time="LIVE"
+              isGlobal
+            />
+            <div className="py-2 px-4 text-[10px] text-gray-600 uppercase font-mono tracking-widest border-b border-white/5 mb-2">Private Tunnels</div>
+            {onlineUsers
+              .filter(u => u.username !== username)
+              .sort((a, b) => (lastMessageMap[b.id] || 0) - (lastMessageMap[a.id] || 0))
+              .map(user => (
+                <ChatListItem
+                  key={user.id}
+                  active={selectedChatId === user.id}
+                  onClick={() => {
+                    setSelectedChatId(user.id);
+                    setUnreadMap(p => ({ ...p, [user.id]: false }));
+                  }}
+                  name={user.username}
+                  lastMsg={lastMessageMap[`text_${user.id}`] || (user.status === "online" ? "Active link..." : "Disconnected")}
+                  time={user.status.toUpperCase()}
+                  status={user.status}
+                  hasUnread={unreadMap[user.id]}
+                />
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col relative bg-[#050810]">
+        {activeTab === 'chat' && (
+          <div className="flex-1 bg-[#050810] relative z-10 flex flex-col h-[calc(100vh-80px)] md:h-screen">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full relative shadow-[-10px_0_30px_rgba(0,0,0,0.5)] z-20">
+              <MultiplayerChat
+                socket={socket}
+                username={username}
+                onlineCount={onlineUsers.length}
+                targetId={selectedChatId}
+                targetName={selectedChatId ? onlineUsers.find((u: any) => u.id === selectedChatId)?.username || "Unknown" : "Global Network"}
+                typingStatus={typingStatus}
+                setUnreadMap={setUnreadMap}
+                setLastMessageMap={setLastMessageMap}
+                selectedChatId={selectedChatId}
+                onlineUsers={onlineUsers}
+                onCall={startCall}
+              />
+            </motion.div>
+          </div>
+        )}
+        {activeTab === 'directory' && <OnlineUsersDirectory onlineUsers={onlineUsers} onCall={startCall} onChat={(id) => { setSelectedChatId(id); setActiveTab('chat'); }} />}
+        {activeTab === 'admin' && <AdminPlaceholder stats={systemStats} />}
+        {activeTab === 'wallet' && <WalletPage walletInfo={walletInfo} username={username} />}
+        {activeTab === 'profile' && <ProfilePage username={username} setUsername={setUsername} avatarSeed={avatarSeed} setAvatarSeed={setAvatarSeed} socket={socket} onBack={() => setActiveTab('chat')} stats={systemStats} />}
+        {activeTab === 'survival' && <NeuralGameWorld username={username} onBack={() => { setActiveTab('chat'); setSelectedLudoRoom(null); }} pendingAgents={pendingAgents} initialRoomId={selectedLudoRoom} socket={socket} inventory={walletInfo?.inventory} wallet={walletInfo?.wallet} />}
+        {activeTab === 'shop' && <ShopPage socket={socket} walletInfo={walletInfo} />}
+
+        {/* Incoming Ludo Invitation Modal */}
+        <AnimatePresence>
+          {incomingLudoInvites.map((invite) => (
+            <motion.div
+              key={invite.roomId}
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="fixed bottom-8 right-8 z-[100] w-80 bg-[#0c1222]/90 backdrop-blur-xl border border-emerald-500/50 rounded-3xl p-6 shadow-[0_0_50px_rgba(16,185,129,0.3)] mb-4"
+            >
+              <div className="flex items-center gap-4 mb-4">
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/30 overflow-hidden">
+                    <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${invite.fromName}`} className="w-full h-full" />
+                  </div>
+                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full animate-ping"></div>
+                </div>
+                <div>
+                  <h3 className="text-emerald-400 font-black text-xs uppercase tracking-widest">Incoming Game</h3>
+                  <p className="text-white font-bold">{invite.fromName}</p>
+                </div>
+              </div>
+              <p className="text-gray-400 text-xs mb-6 leading-relaxed uppercase font-mono">Invited you to a <span className="text-white font-bold">Neural Ludo</span> session. Current players: {invite.playerCount}/4</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setSelectedLudoRoom(invite.roomId);
+                    setIncomingLudoInvites(p => p.filter(i => i.roomId !== invite.roomId));
+                    setActiveTab('survival');
+                  }}
+                  className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-black rounded-xl transition-all text-xs uppercase tracking-widest"
+                >
+                  Accept
+                </button>
+                <button
+                  onClick={() => setIncomingLudoInvites(p => p.filter(i => i.roomId !== invite.roomId))}
+                  className="px-4 py-3 bg-white/5 hover:bg-white/10 text-gray-400 font-bold rounded-xl transition-all text-xs uppercase"
+                >
+                  Decline
+                </button>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+
+        {/* Incoming Chat Toast Overlay */}
+        <AnimatePresence>
+          {toast && (
+            <motion.div
+              initial={{ y: -50, opacity: 0 }}
+              animate={{ y: 20, opacity: 1 }}
+              exit={{ y: -50, opacity: 0 }}
+              onClick={() => { setSelectedChatId(toast.id); setActiveTab('chat'); setToast(null); }}
+              className="absolute top-0 right-10 bg-[#0f1b29] border border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] rounded-xl p-4 z-50 flex items-center gap-4 cursor-pointer hover:bg-[#162638] transition-all"
+            >
+              <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
+                <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${toast.name}`} className="w-8 h-8 rounded-full" />
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <h4 className="text-emerald-400 font-bold text-sm truncate">{toast.name}</h4>
+                <p className="text-white text-xs truncate max-w-[200px]">{toast.text}</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Incoming Call Overlay */}
+        <AnimatePresence>
+          {incomingCall && !activeCall && (
+            <motion.div initial={{ y: -100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -100, opacity: 0 }} className="absolute top-10 left-1/2 -translate-x-1/2 bg-[#0c1222] border border-emerald-500 shadow-[0_0_50px_rgba(16,185,129,0.3)] rounded-2xl p-6 z-50 flex items-center gap-6">
+              <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center animate-pulse">
+                <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${incomingCall.callerName}`} className="w-12 h-12 rounded-full" />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-white">Incoming Secure Call</h3>
+                <p className="text-emerald-500 font-mono text-sm">{incomingCall.callerName} is requesting a video link...</p>
+              </div>
+              <div className="flex gap-3 ml-4">
+                <button onClick={declineCall} className="w-12 h-12 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500 hover:text-white transition-all flex items-center justify-center"><X className="w-6 h-6" /></button>
+                <button onClick={acceptCall} className="w-12 h-12 rounded-full bg-emerald-500 text-[#050810] hover:bg-emerald-400 transition-all flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.5)]"><PhoneCall className="w-6 h-6" /></button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Active Call Interface */}
+        <AnimatePresence>
+          {activeCall && (
+            activeCall.isAi ? (
+              <AiVoiceCallInterface activeCall={activeCall} onEnd={() => setActiveCall(null)} socket={socket} />
+            ) : (
+              <VideoCallInterface
+                socket={socket}
+                activeCall={activeCall}
+                myUsername={username}
+                onEnd={() => setActiveCall(null)}
+              />
+            )
+          )}
+        </AnimatePresence>
+      </main>
+    </div>
+  );
+}
+
+function OnlineUsersDirectory({ onlineUsers, onCall, onChat }: { onlineUsers: any[], onCall: (u: any) => void, onChat: (id: string) => void }) {
+  return (
+    <div className="p-10 w-full h-full overflow-y-auto">
+      <div className="flex justify-between items-center mb-8">
+        <h2 className="text-2xl font-bold text-white flex items-center gap-3">
+          <Users className="text-amber-500 w-8 h-8" />
+          Neural Network Directory ({onlineUsers.length})
+        </h2>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-xs font-mono text-gray-400 hover:text-white hover:bg-white/10 transition-all"
+        >
+          RESCAN NETWORK
+        </button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        {onlineUsers.map(user => (
+          <div key={user.id} className="bg-[#0c1222] border border-white/5 rounded-2xl p-6 hover:border-emerald-500/30 transition-all group">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="relative">
+                <div className="w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center border border-white/10">
+                  <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} alt="avatar" className="w-12 h-12 rounded-full" />
+                </div>
+                <div className={`absolute bottom-0 right-0 w-4 h-4 rounded-full border-2 border-[#0c1222] ${user.status === 'online' ? 'bg-emerald-500' : 'bg-gray-600'}`}></div>
+              </div>
+              <div>
+                <h3 className="text-white font-bold">{user.username}</h3>
+                <p className="text-xs text-gray-500 font-mono uppercase tracking-widest">{user.status}</p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => onChat(user.id)} className="flex-1 py-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs font-bold hover:bg-emerald-500 hover:text-white transition-all">MESSAGE</button>
+              <button onClick={() => onCall(user)} className="p-2 bg-white/5 text-gray-400 hover:text-white rounded-lg transition-all"><Video className="w-4 h-4" /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ChatListItem({ name, lastMsg, time, active, onClick, isGlobal, status, hasUnread }: any) {
+  return (
+    <button onClick={onClick} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${active ? 'bg-emerald-500/10 border border-emerald-500/20' : 'hover:bg-white/5 border border-transparent'} ${status === 'offline' ? 'opacity-50' : ''} ${hasUnread ? 'bg-white/5' : ''}`}>
+      <div className="relative shrink-0">
+        <div className={`w-12 h-12 rounded-full border border-white/10 p-[2px] ${isGlobal ? 'bg-emerald-500/20' : 'bg-[#050810]'}`}>
+          <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${name}`} className="w-full h-full rounded-full" />
+        </div>
+        {!isGlobal && <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#0b121f] ${status === 'online' ? 'bg-emerald-500' : 'bg-gray-600'}`}></div>}
+        {hasUnread && !active && <div className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#050810] animate-pulse"></div>}
+      </div>
+      <div className="flex-1 text-left overflow-hidden">
+        <div className="flex justify-between items-center mb-1">
+          <span className={`text-sm font-bold truncate ${active ? 'text-emerald-400' : 'text-white'} ${hasUnread ? 'text-emerald-400 font-black' : ''}`}>{name}</span>
+          <span className={`text-[9px] font-mono ${status === 'online' ? 'text-emerald-500' : 'text-gray-500'}`}>{time}</span>
+        </div>
+        <p className={`text-[11px] truncate ${hasUnread ? 'text-emerald-500 font-bold' : 'text-gray-500'}`}>{hasUnread ? "NEW MESSAGE" : lastMsg}</p>
+      </div>
+    </button>
+  );
+}
+
+function NavItem({ icon, label, active, onClick }: { icon: any, label: string, active: boolean, onClick: () => void }) {
+  return (
+    <button onClick={onClick} className={`flex items-center gap-4 p-3 rounded-xl transition-all ${active ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'text-gray-500 hover:text-white hover:bg-white/5 border border-transparent'}`}>
+      <div className="w-6 h-6">{icon}</div>
+      <span className="hidden md:block text-sm font-medium">{label}</span>
+    </button>
+  )
+}
+
+function AdminPlaceholder({ stats }: { stats: any }) {
+  return (
+    <div className="p-10 w-full h-full overflow-y-auto">
+      <h2 className="text-2xl font-bold text-white mb-6">System Dashboard</h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="p-6 bg-[#0c1222] border border-white/5 rounded-2xl">
+          <p className="text-gray-500 text-sm">Total Encrypted Messages</p>
+          <motion.p key={stats.totalMessages} initial={{ scale: 1.2, color: '#10b981' }} animate={{ scale: 1, color: '#ffffff' }} className="text-4xl font-black mt-2">
+            {stats.totalMessages.toLocaleString()}
+          </motion.p>
+        </div>
+        <div className="p-6 bg-[#0c1222] border border-white/5 rounded-2xl">
+          <p className="text-gray-500 text-sm">Active WebRTC Calls</p>
+          <motion.p key={stats.activeCalls} initial={{ scale: 1.2 }} animate={{ scale: 1 }} className="text-4xl font-black text-emerald-400 mt-2">
+            {stats.activeCalls}
+          </motion.p>
+        </div>
+        <div className="p-6 bg-[#0c1222] border border-white/5 rounded-2xl">
+          <p className="text-gray-500 text-sm">AI Interventions</p>
+          <motion.p key={stats.aiInterventions} initial={{ scale: 1.2 }} animate={{ scale: 1 }} className="text-4xl font-black text-cyan-400 mt-2">
+            {stats.aiInterventions}
+          </motion.p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProfilePage({ username, setUsername, avatarSeed, setAvatarSeed, socket, onBack, stats }: any) {
+  const [newUsername, setNewUsername] = useState(username);
+  const [newSeed, setNewSeed] = useState(avatarSeed || username);
+  const [status, setStatus] = useState("");
+
+  const handleSave = () => {
+    if (!newUsername.trim()) return;
+    setUsername(newUsername);
+    setAvatarSeed(newSeed);
+    localStorage.setItem("aura_username", newUsername);
+    socket.emit("update_profile", { username: newUsername, avatar: newSeed });
+    setStatus("Neural Signature Synchronized.");
+    setTimeout(() => setStatus(""), 3000);
+  }
+
+  return (
+    <div className="p-6 md:p-12 w-full h-full overflow-y-auto bg-[#050810] flex flex-col items-center">
+      <div className="w-full max-w-4xl">
+        <div className="flex items-center justify-between mb-12">
+          <div>
+            <h2 className="text-4xl font-black text-white">Agent Profile</h2>
+            <p className="text-emerald-500 font-mono text-sm uppercase tracking-[0.3em]">Hardware ID: {socket.id?.substring(0, 12)}</p>
+          </div>
+          <button onClick={onBack} className="p-3 rounded-full bg-white/5 hover:bg-white/10 text-white transition-all border border-white/10">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Left Column: Avatar & Main Identity */}
+          <div className="lg:col-span-1 flex flex-col items-center p-8 bg-[#0c1222] border border-white/5 rounded-3xl shadow-2xl">
+            <div className="relative mb-6">
+              <div className="w-48 h-48 rounded-full bg-emerald-500/10 flex items-center justify-center border-4 border-emerald-500/30 overflow-hidden shadow-[0_0_40px_rgba(16,185,129,0.2)]">
+                <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${newSeed}`} alt="avatar" className="w-40 h-40" />
+              </div>
+              <div className="absolute -bottom-2 right-4 w-10 h-10 bg-emerald-500 rounded-full flex items-center justify-center border-4 border-[#0c1222] text-[#050810]">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+            </div>
+            <h3 className="text-2xl font-bold text-white mb-1">{username}</h3>
+            <p className="text-emerald-500 text-xs font-mono uppercase mb-6 tracking-widest">Active Neural Link</p>
+
+            <div className="w-full space-y-4 border-t border-white/5 pt-6">
+              <div>
+                <label className="text-[10px] text-gray-500 font-mono uppercase mb-2 block">Identity Alias</label>
+                <input
+                  type="text"
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  className="w-full bg-[#050810] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-all font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-gray-500 font-mono uppercase mb-2 block">Avatar Seed (Update DP)</label>
+                <input
+                  type="text"
+                  value={newSeed}
+                  onChange={(e) => setNewSeed(e.target.value)}
+                  className="w-full bg-[#050810] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-all font-mono text-sm"
+                  placeholder="Type anything to change avatar"
+                />
+              </div>
+              <button onClick={handleSave} className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-[#050810] rounded-xl font-black text-sm transition-all shadow-lg shadow-emerald-500/20 uppercase tracking-widest">
+                Save Changes
+              </button>
+              <button
+                onClick={() => {
+                  localStorage.removeItem("aura_username");
+                  window.location.reload();
+                }}
+                className="w-full py-4 mt-4 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/30 rounded-xl font-bold text-sm transition-all uppercase tracking-widest"
+              >
+                Sign Out / De-authorize
+              </button>
+              {status && <p className="text-emerald-500 text-center text-[10px] font-mono animate-pulse">{status}</p>}
+            </div>
+          </div>
+
+          {/* Right Column: Detailed Stats & Hardware Info */}
+          <div className="lg:col-span-2 space-y-8">
+            <div className="p-8 bg-[#0c1222] border border-white/5 rounded-3xl">
+              <h4 className="text-white font-bold mb-6 flex items-center gap-2"><LayoutDashboard className="w-5 h-5 text-emerald-500" /> Activity Analytics</h4>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
+                <div className="space-y-1">
+                  <p className="text-gray-500 text-[10px] uppercase font-mono tracking-tighter">Messages Sent</p>
+                  <p className="text-2xl font-bold text-white tracking-tight">{stats.totalMessages}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-gray-500 text-[10px] uppercase font-mono tracking-tighter">System Uptime</p>
+                  <p className="text-2xl font-bold text-white tracking-tight">99.98%</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-gray-500 text-[10px] uppercase font-mono tracking-tighter">Neural Nodes</p>
+                  <p className="text-2xl font-bold text-white tracking-tight">512 Core</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-8 bg-[#0c1222] border border-white/5 rounded-3xl">
+              <h4 className="text-white font-bold mb-6 flex items-center gap-2"><Lock className="w-5 h-5 text-cyan-500" /> Encryption Protocol</h4>
+              <div className="space-y-4 font-mono text-[11px]">
+                <div className="flex justify-between items-center py-2 border-b border-white/5 text-gray-400">
+                  <span>Algorithm:</span>
+                  <span className="text-cyan-400">AES-256-GCM / RSA-4096</span>
+                </div>
+                <div className="flex justify-between items-center py-2 border-b border-white/5 text-gray-400">
+                  <span>Tunnel Status:</span>
+                  <span className="text-emerald-400 font-bold">SECURED</span>
+                </div>
+                <div className="flex justify-between items-center py-2 text-gray-400">
+                  <span>Node Location:</span>
+                  <span>Shadow-Server [v3.1]</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AiVoiceCallInterface({ activeCall, onEnd, socket }: any) {
+  const [status, setStatus] = useState("Connecting to Neural Node...");
+  const [transcript, setTranscript] = useState("");
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const aiMessageRef = useRef("");
+
+  useEffect(() => {
+    let t1 = setTimeout(() => {
+      setStatus("Connected. Listening...");
+      try {
+        const speech = new SpeechSynthesisUtterance(`Secure neural voice channel established with ${activeCall.username}. Speak now.`);
+        speech.rate = 0.9;
+        speech.pitch = 0.8;
+        window.speechSynthesis.speak(speech);
+      } catch (e) { }
+      startListening();
+    }, 1500);
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = false;
+      recognitionRef.current.lang = 'en-US';
+
+      recognitionRef.current.onresult = (event: any) => {
+        const text = event.results[0][0].transcript;
+        setTranscript(text);
+        setStatus("AI is processing...");
+        socket?.emit("send_message", { targetId: activeCall.userId, text: text, isEncrypted: false });
+      };
+
+      recognitionRef.current.onend = () => {
+        if (!window.speechSynthesis.speaking && !isSpeaking) {
+          try { recognitionRef.current?.start(); } catch (e) { }
+        }
+      };
+    } else {
+      setStatus("Speech Recognition not supported in this browser.");
+    }
+
+    const handleStreamStart = (msg: any) => {
+      if (msg.senderId === activeCall.userId) {
+        aiMessageRef.current = "";
+        setStatus("AI is thinking...");
+        setIsSpeaking(true);
+        try { recognitionRef.current?.stop(); } catch (e) { }
+      }
+    };
+
+    const handleStreamChunk = (msg: any) => {
+      if (msg.senderId === activeCall.userId) {
+        aiMessageRef.current += msg.text;
+      }
+    };
+
+    const handleStreamEnd = (msg: any) => {
+      // Speak the complete message
+      if (aiMessageRef.current) {
+        setStatus("AI is speaking...");
+        const speech = new SpeechSynthesisUtterance(aiMessageRef.current);
+
+        // Find a more human-like voice (English - Google/Premium if available)
+        const voices = window.speechSynthesis.getVoices();
+        const premiumVoice = voices.find(v => v.name.includes("Google") && v.lang.includes("en")) ||
+          voices.find(v => v.lang.includes("en-US")) ||
+          voices[0];
+
+        if (premiumVoice) speech.voice = premiumVoice;
+
+        speech.rate = 1.0;  // Slightly faster for natural flow
+        speech.pitch = 1.1; // Slightly higher for clarity
+        speech.volume = 1.0;
+
+        speech.onend = () => {
+          setIsSpeaking(false);
+          setStatus("Listening...");
+          startListening();
+        };
+        window.speechSynthesis.speak(speech);
+      } else {
+        setIsSpeaking(false);
+        setStatus("Listening...");
+        startListening();
+      }
+    };
+
+    // Cleverbot fallback fallback
+    const handleReceiveMsg = (msg: any) => {
+      if (msg.senderId === activeCall.userId && !msg.isStreaming) {
+        aiMessageRef.current = msg.text;
+        handleStreamEnd(msg);
+      }
+    }
+
+    socket?.on("stream_start", handleStreamStart);
+    socket?.on("stream_chunk", handleStreamChunk);
+    socket?.on("stream_end", handleStreamEnd);
+    socket?.on("receive_message", handleReceiveMsg);
+
+    return () => {
+      clearTimeout(t1);
+      window.speechSynthesis.cancel();
+      if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
+        try { recognitionRef.current.stop(); } catch (e) { }
+      }
+      socket?.off("stream_start", handleStreamStart);
+      socket?.off("stream_chunk", handleStreamChunk);
+      socket?.off("stream_end", handleStreamEnd);
+      socket?.off("receive_message", handleReceiveMsg);
+    };
+  }, []);
+
+  const startListening = () => {
+    try { recognitionRef.current?.start(); } catch (e) { }
+  };
+
+  return (
+    <div className="absolute inset-0 bg-[#050810] z-50 flex flex-col items-center justify-center">
+      <div className={`text-emerald-500 transition-all ${isSpeaking ? 'scale-125 animate-pulse' : 'scale-100'} mb-8`}>
+        <svg width="200" height="100" viewBox="0 0 200 100">
+          <path d="M10,50 Q40,10 70,50 T130,50 T190,50" fill="none" stroke="currentColor" strokeWidth="4" />
+          <path d="M10,50 Q40,90 70,50 T130,50 T190,50" fill="none" stroke="currentColor" strokeWidth="4" opacity="0.5" />
+        </svg>
+      </div>
+      <h2 className="text-3xl font-bold text-white mb-2">{activeCall.username}</h2>
+      <p className="text-emerald-500 font-mono tracking-widest">{status}</p>
+      {transcript && <p className="text-gray-400 mt-4 italic text-center max-w-md">" {transcript} "</p>}
+      <button onClick={onEnd} className="mt-12 w-16 h-16 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center transition-all shadow-[0_0_20px_rgba(239,68,68,0.5)]"><Phone className="w-8 h-8 rotate-[135deg]" /></button>
+    </div>
+  )
+}
+
+function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, typingStatus, setUnreadMap, setLastMessageMap, selectedChatId, onlineUsers, onCall }: any) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [showEmoji, setShowEmoji] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Filter messages based on the active conversation
+  const activeMessages = messages.filter(msg => {
+    if (!targetId) return !msg.targetId; // Global chat messages have no targetId
+    return (msg.senderId === targetId) || (msg.targetId === targetId);
+  });
+
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.emit("get_history", { targetId });
+
+    socket.on("chat_history", (data: any) => {
+      if (data.targetId === targetId) {
+        setMessages(data.messages.map((m: any) => {
+          let dec = m.text;
+          if (m.isEncrypted && !m.isImage && m.text) {
+            try {
+              const bytes = CryptoJS.AES.decrypt(m.text, SECRET_KEY);
+              const val = bytes.toString(CryptoJS.enc.Utf8);
+              if (val) dec = val;
+            } catch (e) { }
+          }
+          return {
+            ...m,
+            timestamp: new Date(m.timestamp),
+            text: dec
+          }
+        }));
+      }
+    });
+
+    socket.on("receive_message", (msg: any) => {
+      let decryptedText = msg.text;
+      if (msg.isEncrypted && !msg.isImage) {
+        try {
+          const bytes = CryptoJS.AES.decrypt(msg.text, SECRET_KEY);
+          const dec = bytes.toString(CryptoJS.enc.Utf8);
+          if (dec) decryptedText = dec;
+        } catch (err) {
+          decryptedText = "[ENCRYPTED CONTENT UNREADABLE]";
+        }
+      }
+
+      // Handle Unread and Sorting logic
+      if (msg.senderId && msg.senderId !== socket.id) {
+        setLastMessageMap((p: any) => ({ ...p, [msg.senderId]: Date.now() }));
+        if (msg.senderId !== targetId) {
+          setUnreadMap((p: any) => ({ ...p, [msg.senderId]: true }));
+        }
+      }
+
+      setMessages(p => [...p, {
+        ...msg,
+        id: msg.id || `msg_${Date.now()}_${Math.random()}`,
+        timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+        text: decryptedText
+      }]);
+    });
+
+    socket.on("stream_start", (data: any) => {
+      // Also update sorting/unread for streaming agents
+      if (data.senderId) {
+        setLastMessageMap((p: any) => ({ ...p, [data.senderId]: Date.now() }));
+        if (data.senderId !== targetId) {
+          setUnreadMap((p: any) => ({ ...p, [data.senderId]: true }));
+        }
+      }
+
+      setMessages(p => [...p, {
+        id: data.messageId || `ai_${Date.now()}`,
+        senderName: data.senderName,
+        senderId: data.senderId,
+        targetId: data.targetId,
+        text: "",
+        timestamp: new Date(),
+        isUser: data.isUser,
+        isStreaming: true
+      }]);
+    });
+    socket.on("stream_chunk", (data: any) => {
+      setMessages(p => p.map(m => m.id === data.messageId ? { ...m, text: m.text + data.text } : m));
+    });
+    socket.on("stream_end", (data: any) => {
+      setMessages(p => p.map(m => m.id === data.messageId ? { ...m, isStreaming: false } : m));
+    });
+
+    return () => {
+      socket.off("chat_history");
+      socket.off("receive_message"); socket.off("system_broadcast");
+      socket.off("stream_start"); socket.off("stream_chunk"); socket.off("stream_end");
+    };
+  }, [socket, targetId]);
+
+  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [activeMessages]);
+
+  const handleSend = () => {
+    if (!input.trim() || !socket) return;
+    const encryptedText = CryptoJS.AES.encrypt(input, SECRET_KEY).toString();
+    socket.emit("send_message", { text: encryptedText, decryptedTextForAi: input, targetId: targetId });
+    setInput("");
+    setShowEmoji(false);
+  };
+
+  const handleImageUpload = (e: any) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        socket.emit("send_message", { text: ev.target?.result, targetId: targetId, isImage: true, isEncrypted: false });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full w-full">
+      {/* WhatsApp/Discord Style Header */}
+      <header className="h-20 flex items-center justify-between px-6 border-b border-white/5 bg-[#090d16]">
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center border border-emerald-500/30 overflow-hidden ${!targetId ? 'bg-emerald-500/20' : 'bg-[#050810]'}`}>
+              <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName}`} className="w-10 h-10" />
+            </div>
+            {!targetId && <div className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#090d16] animate-pulse"></div>}
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-white">{targetName}</h1>
+            <p className="text-[10px] text-emerald-500 font-mono flex items-center gap-1 uppercase tracking-tighter">
+              {typingStatus ? (
+                <span className="animate-pulse">{typingStatus}</span>
+              ) : (
+                <>
+                  <ShieldCheck className="w-3 h-3" />
+                  {targetId ? "Secure Peer Tunnel" : `${onlineCount} AGENTS ONLINE`}
+                </>
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-4">
+          <button onClick={() => { if (targetId) socket.emit("invite_game", { targetId, targetName }); }} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 hover:text-emerald-400 transition-all" title="Invite to Neural Ludo"><Gamepad2 className="w-5 h-5" /></button>
+          <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId); if (u) onCall(u); }} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 hover:text-cyan-400 transition-all"><Video className="w-5 h-5" /></button>
+          <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId); if (u) onCall(u); }} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 hover:text-emerald-400 transition-all"><Phone className="w-5 h-5" /></button>
+          <button className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 transition-all"><MoreVertical className="w-5 h-5" /></button>
+        </div>
+      </header>
+
+      {/* Chat Area */}
+      <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-[#050810] bg-opacity-95 bg-blend-multiply scrollbar-thin scrollbar-thumb-emerald-900/50">
+        <AnimatePresence>
+          {activeMessages.length === 0 && (
+            <div key="empty-messages" className="text-center mt-20 text-gray-600 font-mono text-[10px] uppercase tracking-widest bg-white/5 inline-block px-6 py-2 rounded-full mx-auto block w-max">
+              <ShieldCheck className="inline-block w-4 h-4 mr-2 text-emerald-500" /> {targetId ? `Encrypted tunnel with ${targetName} established` : "End-to-End Encrypted Tunnel Active"}
+            </div>
+          )}
+          {activeMessages.map((msg) => (
+            <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex w-full gap-3 ${msg.senderName === username ? "flex-row-reverse" : msg.isSystem ? "justify-center" : "flex-row"}`}>
+              {!msg.isSystem && (
+                <div className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1">
+                  <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName}`} className="w-full h-full" />
+                </div>
+              )}
+
+              {msg.isSystem ? (
+                <div className="text-[10px] font-mono text-emerald-600 tracking-widest bg-emerald-950/20 px-4 py-2 rounded-full border border-emerald-900/50 uppercase my-4">
+                  {msg.text}
+                </div>
+              ) : (
+                <div className={`max-w-[85%] md:max-w-[70%] flex flex-col ${msg.senderName === username ? "items-end" : "items-start"}`}>
+                  <div className={`p-3 md:px-4 md:py-3 relative text-[14px] shadow-xl ${msg.senderName === username
+                    ? "bg-emerald-600 text-white rounded-2xl rounded-tr-sm"
+                    : msg.senderName === "AURA-OS"
+                      ? "bg-[#0f2a4a] border border-cyan-500/30 text-cyan-50 rounded-2xl rounded-tl-sm"
+                      : "bg-[#162032] border border-white/5 text-gray-200 rounded-2xl rounded-tl-sm"
+                    }`}>
+                    {msg.senderName !== username && !targetId && (
+                      <span className={`text-[10px] font-black uppercase tracking-tighter mb-1 block ${msg.senderName === "AURA-OS" ? "text-cyan-400" : "text-emerald-500"}`}>
+                        {msg.senderName}
+                      </span>
+                    )}
+                    <div className="leading-relaxed break-words">
+                      {msg.isImage ? (
+                        <img src={msg.text} alt="Shared visual data" className="max-w-full max-h-60 rounded-xl mt-1 border border-white/10" />
+                      ) : (
+                        msg.text
+                      )}
+                      {msg.isStreaming && <span className={`inline-block w-2 h-4 ml-1 animate-pulse ${msg.senderName === "AURA-OS" ? "bg-cyan-400" : "bg-emerald-400"}`}></span>}
+                    </div>
+                    {msg.isLudoReady && (
+                      <div className="mt-3">
+                        <button
+                          onClick={() => {
+                            socket?.emit('send_message', { targetId: msg.senderId, text: "Yes, I am ready.", decryptedTextForAi: "yes" });
+                          }}
+                          className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-[#050810] font-black text-[10px] uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.4)]"
+                        >
+                          <Gamepad2 className="w-4 h-4" /> START THE GAME
+                        </button>
+                      </div>
+                    )}
+                    <div className={`text-[9px] font-mono mt-1 opacity-50 flex items-center justify-end gap-1 ${msg.senderName === username ? "text-emerald-100" : "text-gray-400"}`}>
+                      {msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {msg.senderName === username && <ShieldCheck className="w-2 h-2" />}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          ))}
+          <div ref={messagesEndRef} />
+        </AnimatePresence>
+      </div>
+
+      {/* Input */}
+      <div className="p-4 bg-[#090d16] border-t border-white/5 relative">
+        <AnimatePresence>
+          {showEmoji && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} className="absolute bottom-[80px] left-4 z-50">
+              <EmojiPicker theme={"dark" as any} onEmojiClick={(e) => setInput(p => p + e.emoji)} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="relative flex items-center w-full bg-[#050810] border border-white/10 rounded-full p-1 shadow-inner focus-within:border-emerald-500/50 transition-all">
+          <button onClick={() => setShowEmoji(!showEmoji)} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 transition-all"><Smile className="w-5 h-5" /></button>
+
+          <input type="file" ref={fileInputRef} accept="image/*" onChange={handleImageUpload} className="hidden" />
+          <button onClick={() => fileInputRef.current?.click()} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 transition-all"><ImageIcon className="w-5 h-5" /></button>
+
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            placeholder="Type an encrypted message..."
+            className="flex-1 bg-transparent border-none outline-none px-2 text-white placeholder-gray-600 text-sm w-full"
+          />
+          <button onClick={handleSend} disabled={!input.trim()} className="w-12 h-12 bg-emerald-500 rounded-full text-white flex items-center justify-center hover:bg-emerald-400 disabled:opacity-50 disabled:hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-500/20">
+            <Send className="w-5 h-5 ml-1" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VideoCallInterface({ socket, activeCall, myUsername, onEnd }: any) {
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const [callStatus, setCallStatus] = useState("Establishing secure line...");
+  const peerRef = useRef<any>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  useEffect(() => {
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+      streamRef.current = stream;
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+
+      const peer = new Peer({
+        initiator: activeCall.isCaller,
+        trickle: false,
+        stream: stream
+      });
+
+      peer.on('signal', (data: any) => {
+        if (activeCall.isCaller) {
+          socket.emit('call_user', { userToCall: activeCall.userId, signalData: data, from: myUsername, callerName: myUsername });
+        } else {
+          socket.emit('answer_call', { signal: data, to: activeCall.userId });
+        }
+      });
+
+      peer.on('stream', (remoteStream: MediaStream) => {
+        setCallStatus("Connected. Encrypted E2EE Call.");
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+      });
+
+      peer.on('error', (err: any) => {
+        console.error(err);
+        setCallStatus("Connection failed.");
+      });
+
+      socket.on('call_accepted', (signal: any) => {
+        setCallStatus("Connecting...");
+        peer.signal(signal);
+      });
+
+      if (!activeCall.isCaller && activeCall.initialSignal) {
+        peer.signal(activeCall.initialSignal);
+      }
+
+      peerRef.current = peer;
+    }).catch(err => {
+      setCallStatus("Camera/Microphone access denied.");
+    });
+
+    return () => {
+      socket.off('call_accepted');
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      if (peerRef.current) {
+        peerRef.current.destroy();
+      }
+    };
+  }, []);
+
+  const endCall = () => {
+    socket.emit("end_call", { to: activeCall.userId });
+    onEnd();
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-[#050810]/95 backdrop-blur-lg z-40 flex flex-col items-center justify-center">
+      <h2 className="text-2xl font-bold text-white mb-2">{activeCall.username}</h2>
+      <p className="text-emerald-500 font-mono text-xs mb-8 flex items-center gap-2"><Lock className="w-3 h-3" /> {callStatus}</p>
+
+      <div className="relative w-full max-w-4xl aspect-video bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl">
+        <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
+
+        <div className="absolute bottom-6 right-6 w-48 aspect-video bg-black rounded-xl overflow-hidden border-2 border-emerald-500 shadow-lg">
+          <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover transform -scale-x-100"></video>
+        </div>
+      </div>
+
+      <div className="mt-8 flex gap-6">
+        <button onClick={endCall} className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-[0_0_30px_rgba(239,68,68,0.4)] transition-all">
+          <Phone className="w-8 h-8 rotate-[135deg]" />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+
+function WalletPage({ walletInfo, username }: { walletInfo: any, username: string }) {
+  const totalIn = walletInfo.history?.filter((h: any) => h.type === 'cash_in').reduce((acc: number, h: any) => acc + h.amount, 0) || 0;
+  const totalOut = walletInfo.history?.filter((h: any) => h.type === 'cash_out').reduce((acc: number, h: any) => acc + h.amount, 0) || 0;
+
+  return (
+    <div className="flex-1 bg-[#050810] h-screen overflow-y-auto p-8 relative">
+      <div className="max-w-5xl mx-auto">
+
+        {/* Header section */}
+        <div className="flex justify-between items-center mb-10">
+          <div>
+            <h1 className="text-4xl font-black text-white tracking-widest uppercase mb-2">Neural Wallet</h1>
+            <p className="text-emerald-400 font-mono text-sm tracking-widest">Global Encryption Network</p>
+          </div>
+          <div className="flex gap-4">
+            <button className="px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all text-sm flex items-center gap-2 border border-white/10">
+              <Zap className="w-4 h-4 text-amber-400" /> BUY LKR
+            </button>
+          </div>
+        </div>
+
+        {/* Balance Card */}
+        <div className="bg-gradient-to-br from-amber-500/20 to-amber-900/20 border border-amber-500/30 rounded-3xl p-10 mb-8 relative overflow-hidden shadow-[0_0_50px_rgba(245,158,11,0.15)]">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/20 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
+          <div className="absolute bottom-0 left-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl translate-y-1/2 -translate-x-1/2"></div>
+
+          <div className="relative z-10 flex flex-col md:flex-row justify-between items-center gap-8">
+            <div>
+              <p className="text-amber-500/80 font-mono text-sm uppercase tracking-[0.2em] mb-2">Available Balance</p>
+              <div className="flex items-baseline gap-2">
+                <span className="text-6xl md:text-8xl font-black text-amber-400 drop-shadow-[0_0_20px_rgba(245,158,11,0.5)]">
+                  {walletInfo.wallet?.toLocaleString()}
+                </span>
+                <span className="text-2xl font-bold text-amber-500/50">LKR</span>
+              </div>
+            </div>
+
+            <div className="flex gap-8 bg-black/40 backdrop-blur-md p-6 rounded-2xl border border-white/5">
+              <div>
+                <p className="text-gray-500 text-xs font-mono uppercase mb-1">Total Winnings</p>
+                <p className="text-emerald-400 font-black text-xl">+{totalIn.toLocaleString()}</p>
+              </div>
+              <div className="w-px bg-white/10"></div>
+              <div>
+                <p className="text-gray-500 text-xs font-mono uppercase mb-1">Total Bets Placed</p>
+                <p className="text-red-400 font-black text-xl">-{totalOut.toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* History Section */}
+        <div>
+          <h2 className="text-xl font-bold text-white mb-6 uppercase tracking-widest border-b border-white/10 pb-4">Transaction History</h2>
+          <div className="space-y-4">
+            {walletInfo.history?.length > 0 ? (
+              walletInfo.history.slice().reverse().map((h: any, i: number) => (
+                <div key={i} className="bg-[#0c1222] border border-white/5 rounded-2xl p-6 flex justify-between items-center hover:border-white/10 transition-all group">
+                  <div className="flex items-center gap-4">
+                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${h.type === 'cash_in' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+                      <Wallet className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <p className="text-white font-bold text-lg mb-1">{h.reason}</p>
+                      <p className="text-gray-500 font-mono text-xs">{new Date(h.date).toLocaleDateString()} at {new Date(h.date).toLocaleTimeString()}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className={`font-black text-2xl ${h.type === 'cash_in' ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {h.type === 'cash_in' ? '+' : '-'}{h.amount.toLocaleString()} LKR
+                    </p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-3xl">
+                <Wallet className="w-16 h-16 text-gray-700 mx-auto mb-4" />
+                <p className="text-gray-500 font-mono">No transaction history found.</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+function ShopPage({ socket, walletInfo }: { socket: Socket | null, walletInfo: any }) {
+  const [activeShopTab, setActiveShopTab] = useState<'tokens' | 'boards'>('tokens');
+
+  const tokens = [
+    { id: 'standard', name: 'Standard Unit', price: 0, icon: '⬢', desc: 'Default neural node geometry.' },
+    { id: 'button', name: 'Tactical Button', price: 1500, icon: '🔘', desc: 'Low-profile sleek kinetic disc.' },
+    { id: 'sphere', name: 'Neon Sphere', price: 1000, icon: '●', desc: 'High-speed aerodynamic kinetic unit.' },
+    { id: 'cube', name: 'Cyber Cube', price: 2500, icon: '■', desc: 'Reinforced block chain geometry.' },
+    { id: 'diamond', name: 'Apex Diamond', price: 3500, icon: '💎', desc: 'Multi-faceted crystalline sync unit.' },
+    { id: 'pyramid', name: 'Neural Pyramid', price: 5000, icon: '▲', desc: 'Elite geometric sync structure.' },
+  ];
+
+  const boards = [
+    { id: 'classic', name: 'Classic Protocol', price: 0, desc: 'Standard AURA-OS grid interface.' },
+    { id: 'space', name: 'Deep Space', price: 2000, desc: 'Play on the edge of the neural void.' },
+    { id: 'matrix', name: 'Matrix Source', price: 4500, desc: 'Raw binary stream visualization.' },
+    { id: 'gold', name: 'Golden Empire', price: 8000, desc: 'Premium executive neural grid.' },
+  ];
+
+  const buy = (id: string, price: number, type: string, name: string) => {
+    socket?.emit('shop_buy', { itemId: id, price, type, itemName: name });
+  };
+
+  const equip = (id: string, type: string) => {
+    socket?.emit('shop_select', { itemId: id, type });
+  };
+
+  const inventory = walletInfo?.inventory || { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' };
+
+  return (
+    <div className="flex-1 flex flex-col p-8 bg-[#050810] overflow-y-auto selection:bg-emerald-500/30">
+      <div className="flex justify-between items-end mb-12">
+        <div>
+          <h1 className="text-4xl font-black text-white mb-2 tracking-tighter">NEURAL SHOP</h1>
+          <p className="text-emerald-500 font-mono text-sm tracking-widest uppercase">Upgrade your grid interface</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 px-6 py-4 rounded-2xl text-right">
+          <p className="text-gray-500 text-[10px] font-mono uppercase tracking-[0.2em] mb-1">Available Credits</p>
+          <p className="text-3xl font-black text-emerald-400">{walletInfo?.wallet || 0} <span className="text-xs">LKR</span></p>
+        </div>
+      </div>
+
+      <div className="flex gap-4 mb-8">
+        <button onClick={() => setActiveShopTab('tokens')} className={`px-8 py-3 rounded-xl font-bold transition-all ${activeShopTab === 'tokens' ? 'bg-emerald-500 text-black shadow-[0_0_20px_rgba(16,185,129,0.3)]' : 'bg-white/5 text-gray-500 hover:text-white'}`}>TOKEN SKINS</button>
+        <button onClick={() => setActiveShopTab('boards')} className={`px-8 py-3 rounded-xl font-bold transition-all ${activeShopTab === 'boards' ? 'bg-emerald-500 text-black shadow-[0_0_20px_rgba(16,185,129,0.3)]' : 'bg-white/5 text-gray-500 hover:text-white'}`}>BOARD STYLES</button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {activeShopTab === 'tokens' ? tokens.map(t => {
+          const owned = inventory.tokens.includes(t.id);
+          const selected = inventory.selectedToken === t.id;
+          return (
+            <div key={t.id} className={`bg-[#0c1222] border rounded-3xl p-6 transition-all duration-500 ${selected ? 'border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.1)]' : 'border-white/5 hover:border-white/20'}`}>
+              <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center text-4xl mb-6">{t.icon}</div>
+              <h3 className="text-xl font-bold text-white mb-1">{t.name}</h3>
+              <p className="text-gray-500 text-xs mb-6 h-8">{t.desc}</p>
+              <div className="flex justify-between items-center mt-auto pt-4 border-t border-white/5">
+                <span className="text-emerald-400 font-bold">{t.price > 0 ? `${t.price} LKR` : 'FREE'}</span>
+                {owned ? (
+                  <button onClick={() => equip(t.id, 'token')} className={`px-4 py-2 rounded-lg text-xs font-bold ${selected ? 'bg-emerald-500 text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}>{selected ? 'EQUIPPED' : 'EQUIP'}</button>
+                ) : (
+                  <button onClick={() => buy(t.id, t.price, 'token', t.name)} className="px-4 py-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-black rounded-lg text-xs font-bold transition-all">BUY SKIN</button>
+                )}
+              </div>
+            </div>
+          );
+        }) : boards.map(b => {
+          const owned = inventory.boards.includes(b.id);
+          const selected = inventory.selectedBoard === b.id;
+          return (
+            <div key={b.id} className={`bg-[#0c1222] border rounded-3xl p-6 transition-all duration-500 ${selected ? 'border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.1)]' : 'border-white/5 hover:border-white/20'}`}>
+              <div className={`w-full h-32 rounded-2xl mb-6 ${b.id === 'classic' ? 'bg-[#162032]' : b.id === 'space' ? 'bg-[#0a0a2a]' : b.id === 'matrix' ? 'bg-[#001a00]' : 'bg-[#2a1a00]'}`}></div>
+              <h3 className="text-xl font-bold text-white mb-1">{b.name}</h3>
+              <p className="text-gray-500 text-xs mb-6 h-8">{b.desc}</p>
+              <div className="flex justify-between items-center mt-auto pt-4 border-t border-white/5">
+                <span className="text-emerald-400 font-bold">{b.price > 0 ? `${b.price} LKR` : 'FREE'}</span>
+                {owned ? (
+                  <button onClick={() => equip(b.id, 'board')} className={`px-4 py-2 rounded-lg text-xs font-bold ${selected ? 'bg-emerald-500 text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}>{selected ? 'EQUIPPED' : 'EQUIP'}</button>
+                ) : (
+                  <button onClick={() => buy(b.id, b.price, 'board', b.name)} className="px-4 py-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-black rounded-lg text-xs font-bold transition-all">PURCHASE</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

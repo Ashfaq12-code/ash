@@ -1,0 +1,186 @@
+🎮 Ludo Game Basics
+👥 Players
+2 to 4 players
+Each player has:
+4 tokens/pawns
+A home/base area
+A colored path
+
+Colors usually:
+
+🔴 Red
+🟢 Green
+🔵 Blue
+🟡 Yellow
+🧩 Goal of the Game
+
+Move all 4 tokens:
+
+Out of the base
+Around the board
+Into the center/home triangle
+
+First player to finish all 4 wins.
+
+🎲 Dice Rules
+
+Players roll:
+
+1 dice (1–6)
+🚪 Starting a Token
+
+A token can leave the base ONLY when:
+
+Player rolls a 6
+
+Example:
+
+Red player rolls 6
+One red token moves from base to starting tile
+🔁 Turn Flow
+Step-by-step
+1. Player Turn Starts
+
+Example:
+
+currentPlayer = "RED"
+2. Roll Dice
+dice = random(1,6)
+3. Check Possible Moves
+
+Player can:
+
+Open new token if dice == 6
+Move existing token
+Skip if no move possible
+4. Move Token
+
+Example:
+
+Dice = 4
+Token moves 4 boxes forward
+5. End Turn
+
+Normally:
+
+Next player turn
+
+BUT…
+
+If player rolls:
+
+6 → gets another turn
+🛣️ Board Path Logic
+
+Each color has:
+
+Different starting tile
+Same circular path
+
+Tokens move:
+
+Around outer board
+Enter own home path
+Reach final center
+🏠 Home Path
+
+Near the end:
+
+Token enters colored final lane
+
+Example:
+
+Red enters red lane
+
+Then:
+
+Must roll exact number to finish
+💥 Killing / Capturing
+
+If token lands on enemy:
+
+Enemy token returns to base
+
+Example:
+
+Red lands on Blue
+→ Blue goes back home
+🛡️ Safe Zones
+
+Some tiles are protected.
+
+Usually:
+
+Star tiles
+Starting tiles
+
+Enemy cannot kill there.
+
+🎯 Winning
+
+Player wins when:
+
+all 4 tokens reached center
+🧠 Important Game Rules
+✅ Rule 1 — Roll 6
+Opens token
+Gives extra turn
+✅ Rule 2 — Three 6s
+
+Many versions:
+
+3 continuous sixes = turn cancelled
+
+Example:
+
+6 → 6 → 6
+= no move
+next player turn
+
+Optional rule.
+
+✅ Rule 3 — Exact Finish
+
+Need exact dice number to enter center.
+
+Example:
+
+2 tiles left
+Dice = 3
+→ cannot move
+🧱 Data Structure Idea
+Player Object
+player = {
+  color: "red",
+  tokens: []
+}
+Token Object
+token = {
+  position: -1,
+  isFinished: false
+}
+📍 Position System
+Suggested Logic
+Base
+position = -1
+Board Path
+0 → 51
+Home Path
+52 → 57
+Finished
+finished = true
+🔄 Full Gameplay Example
+RED TURN
+Roll Dice
+Dice = 6
+Open Token
+Red token enters board
+Extra Turn
+Dice = 3
+Move
+Token moves 3 steps
+End Turn
+Blue player turn
+🖼️ Your Board Layout
+
+look this is the we build game rules this game ruls compre this game need to wrk we can play ok we can invite player real time in our chats and aslo real user link share we ca invte play the game by online onlin playing 4 boxes nere profile neeed to show a reltic proffihnla way like game full active conntion we can send message in side game need a option and aslo we can ad new playes after game end in the game nee option ivting need with list need toshiw our chat have all payes we an reltime invire to send the link player out of area so like think and build fully advce comple real time build teh backend more stroung 
