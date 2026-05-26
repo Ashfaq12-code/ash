@@ -56,7 +56,25 @@ export default function App() {
   useEffect(() => {
     // Dynamically connect to the backend socket server.
     // In production, use NEXT_PUBLIC_SOCKET_URL from environment variables.
-    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
+    let socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "";
+    
+    // Clean and sanitize the URL (trim whitespace, remove quotes, strip trailing slash)
+    socketUrl = socketUrl.trim().replace(/^['"]|['"]$/g, "");
+    if (socketUrl.endsWith("/")) {
+      socketUrl = socketUrl.slice(0, -1);
+    }
+    
+    if (socketUrl) {
+      // If it doesn't have http:// or https://, prepend https:// for production reliability
+      if (!socketUrl.startsWith("http://") && !socketUrl.startsWith("https://")) {
+        socketUrl = "https://" + socketUrl;
+      }
+    } else {
+      socketUrl = `${window.location.protocol}//${window.location.hostname}:5000`;
+    }
+
+    console.log("[SOCKET] Attempting connection to URL:", socketUrl);
+
     const newSocket = io(socketUrl, {
       transports: ['polling', 'websocket'],
       extraHeaders: {
@@ -67,6 +85,19 @@ export default function App() {
       reconnectionDelay: 1000,
       timeout: 15000,
     });
+
+    newSocket.on("connect", () => {
+      console.log("[SOCKET] Connected successfully! Socket ID:", newSocket.id);
+    });
+
+    newSocket.on("connect_error", (error) => {
+      console.error("[SOCKET] Connection error to:", socketUrl, error);
+    });
+
+    newSocket.on("disconnect", (reason) => {
+      console.warn("[SOCKET] Disconnected:", reason);
+    });
+
     setSocket(newSocket);
 
     // PERSISTENCE: Check for existing session
