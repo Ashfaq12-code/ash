@@ -172,7 +172,7 @@ export default function App() {
     <div className="bg-[#0b0f19] text-white font-sans overflow-x-hidden overflow-y-auto min-h-screen w-full selection:bg-emerald-500/30">
       <AnimatePresence mode="wait">
         {!isAuthenticated ? (
-          <BiometricLogin key="login" socket={socket} onAuth={handleAuth} onGuest={handleGuestExplore} />
+          <BiometricLogin key="login" socket={socket} connectedUrl={connectedUrl} onAuth={handleAuth} onGuest={handleGuestExplore} />
         ) : (
           <MainDashboard key="dashboard" socket={socket} username={username} setUsername={setUsername} avatarSeed={avatarSeed} setAvatarSeed={setAvatarSeed} isGuest={isGuest} setIsGuest={setIsGuest} onLogOut={() => { setIsAuthenticated(false); setIsGuest(false); localStorage.removeItem("aura_username"); }} />
         )}
@@ -181,7 +181,7 @@ export default function App() {
   );
 }
 
-function BiometricLogin({ socket, onAuth, onGuest }: { socket: Socket | null, onAuth: (name: string) => void, onGuest: () => void }) {
+function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Socket | null, connectedUrl: string, onAuth: (name: string) => void, onGuest: () => void }) {
   const [loginMode, setLoginMode] = useState<"face" | "clap" | "credentials">("face");
 
   // Credentials State
