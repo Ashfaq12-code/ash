@@ -51,6 +51,7 @@ export default function App() {
   const [username, setUsername] = useState("");
   const [avatarSeed, setAvatarSeed] = useState(""); // User's custom avatar seed
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [connectedUrl, setConnectedUrl] = useState<string>("");
   const [isAutoAuthenticating, setIsAutoAuthenticating] = useState(true);
 
   useEffect(() => {
@@ -73,6 +74,7 @@ export default function App() {
       socketUrl = `${window.location.protocol}//${window.location.hostname}:5000`;
     }
 
+    setConnectedUrl(socketUrl);
     console.log("[SOCKET] Attempting connection to URL:", socketUrl);
 
     const newSocket = io(socketUrl, {
@@ -267,7 +269,7 @@ function BiometricLogin({ socket, onAuth, onGuest }: { socket: Socket | null, on
       return;
     }
     if (!socket || !socket.connected) {
-      setErrorMessage("Not connected to server. Please wait or refresh.");
+      setErrorMessage(`Not connected to server (URL: ${connectedUrl}). Please wait or refresh.`);
       return;
     }
     setErrorMessage("");
@@ -291,7 +293,7 @@ function BiometricLogin({ socket, onAuth, onGuest }: { socket: Socket | null, on
       return;
     }
     if (!socket || !socket.connected) {
-      setErrorMessage("Not connected to server. Please wait or refresh.");
+      setErrorMessage(`Not connected to server (URL: ${connectedUrl}). Please wait or refresh.`);
       return;
     }
     setErrorMessage("");

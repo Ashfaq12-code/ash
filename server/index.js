@@ -39,7 +39,7 @@ function broadcastGameState(game, ioRef) {
 const cors = require("cors");
 const app = express();
 app.use(cors({
-    origin: "*",
+    origin: true, // Automatically reflect the request origin to satisfy credentials: true
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "Bypass-Tunnel-Reminder"],
     credentials: true
@@ -48,7 +48,10 @@ app.use(cors({
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*",
+        origin: (origin, callback) => {
+            // Reflect the request origin dynamically or allow wildcard for non-credential requests
+            callback(null, origin || "*");
+        },
         methods: ["GET", "POST", "OPTIONS"],
         allowedHeaders: ["Bypass-Tunnel-Reminder"],
         credentials: true
