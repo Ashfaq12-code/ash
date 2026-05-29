@@ -50,6 +50,8 @@ export default function App() {
   const [isGuest, setIsGuest] = useState(false);
   const [username, setUsername] = useState("");
   const [avatarSeed, setAvatarSeed] = useState(""); // User's custom avatar seed
+  const [about, setAbout] = useState("Active Neural Agent"); // User's bio/about
+  const [showLastSeen, setShowLastSeen] = useState(true); // LastSeen privacy setting
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connectedUrl, setConnectedUrl] = useState<string>("");
   const [isAutoAuthenticating, setIsAutoAuthenticating] = useState(true);
@@ -73,10 +75,8 @@ export default function App() {
     } else {
       socketUrl = `${window.location.protocol}//${window.location.hostname}:5000`;
     }
-
     setConnectedUrl(socketUrl);
     console.log("[SOCKET] Attempting connection to URL:", socketUrl);
-
     const newSocket = io(socketUrl, {
       transports: ['polling', 'websocket'],
       extraHeaders: {
@@ -130,6 +130,8 @@ export default function App() {
     const onAuthSuccess = (data: any) => {
       setUsername(data.username);
       if (data.avatar) setAvatarSeed(data.avatar);
+      if (data.about) setAbout(data.about);
+      if (data.showLastSeen !== undefined) setShowLastSeen(data.showLastSeen);
       setIsAuthenticated(true);
       localStorage.setItem("aura_username", data.username);
       setIsAutoAuthenticating(false);
@@ -143,9 +145,11 @@ export default function App() {
     };
   }, []);
 
-  const handleAuth = (name: string, avatar?: string) => {
+  const handleAuth = (name: string, avatar?: string, userAbout?: string, userShowLastSeen?: boolean) => {
     setUsername(name);
     if (avatar) setAvatarSeed(avatar);
+    if (userAbout) setAbout(userAbout);
+    if (userShowLastSeen !== undefined) setShowLastSeen(userShowLastSeen);
     setIsAuthenticated(true);
     setIsGuest(false);
     localStorage.setItem("aura_username", name);
@@ -176,14 +180,14 @@ export default function App() {
         {!isAuthenticated ? (
           <BiometricLogin key="login" socket={socket} connectedUrl={connectedUrl} onAuth={handleAuth} onGuest={handleGuestExplore} />
         ) : (
-          <MainDashboard key="dashboard" socket={socket} username={username} setUsername={setUsername} avatarSeed={avatarSeed} setAvatarSeed={setAvatarSeed} isGuest={isGuest} setIsGuest={setIsGuest} onLogOut={() => { setIsAuthenticated(false); setIsGuest(false); localStorage.removeItem("aura_username"); }} />
+          <MainDashboard key="dashboard" socket={socket} username={username} setUsername={setUsername} avatarSeed={avatarSeed} setAvatarSeed={setAvatarSeed} about={about} setAbout={setAbout} showLastSeen={showLastSeen} setShowLastSeen={setShowLastSeen} isGuest={isGuest} setIsGuest={setIsGuest} onLogOut={() => { setIsAuthenticated(false); setIsGuest(false); localStorage.removeItem("aura_username"); }} />
         )}
       </AnimatePresence>
     </div>
   );
 }
 
-function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Socket | null, connectedUrl: string, onAuth: (name: string, avatar?: string) => void, onGuest: () => void }) {
+function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Socket | null, connectedUrl: string, onAuth: (name: string, avatar?: string, userAbout?: string, userShowLastSeen?: boolean) => void, onGuest: () => void }) {
   const [loginMode, setLoginMode] = useState<"face" | "clap" | "credentials">("face");
 
   // Credentials State
@@ -247,7 +251,7 @@ function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Soc
       if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
       setIsSubmitting(false);
       setIsRegistering(false);
-      onAuth(data.username, data.avatar);
+      onAuth(data.username, data.avatar, data.about, data.showLastSeen);
     };
     const handleError = (msg: string) => {
       if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
@@ -818,7 +822,7 @@ function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Soc
   );
 }
 
-function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSeed, isGuest, setIsGuest, onLogOut }: { socket: Socket | null, username: string, setUsername: (name: string) => void, avatarSeed: string, setAvatarSeed: (seed: string) => void, isGuest: boolean, setIsGuest: (g: boolean) => void, onLogOut: () => void }) {
+function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSeed, about, setAbout, showLastSeen, setShowLastSeen, isGuest, setIsGuest, onLogOut }: { socket: Socket | null, username: string, setUsername: (name: string) => void, avatarSeed: string, setAvatarSeed: (seed: string) => void, about: string, setAbout: (about: string) => void, showLastSeen: boolean, setShowLastSeen: (show: boolean) => void, isGuest: boolean, setIsGuest: (g: boolean) => void, onLogOut: () => void }) {
   const [activeTab, setActiveTab] = useState<'chat' | 'directory' | 'admin' | 'profile' | 'survival' | 'wallet' | 'shop' | 'discord'>('chat');
   const [selectedChatId, setSelectedChatId] = useState<string | null | 'LIST'>(null); // null = Global Chat
   const selectedChatIdRef = useRef(selectedChatId);
@@ -1567,6 +1571,10 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
             setUsername={setUsername}
             avatarSeed={avatarSeed}
             setAvatarSeed={setAvatarSeed}
+            about={about}
+            setAbout={setAbout}
+            showLastSeen={showLastSeen}
+            setShowLastSeen={setShowLastSeen}
             socket={socket}
             onBack={() => setActiveTab('chat')}
             stats={systemStats}
@@ -2036,134 +2044,218 @@ function AdminPlaceholder({ stats }: { stats: any }) {
   )
 }
 
-function ProfilePage({ username, setUsername, avatarSeed, setAvatarSeed, socket, onBack, stats }: any) {
+function ProfilePage({ username, setUsername, avatarSeed, setAvatarSeed, about, setAbout, showLastSeen, setShowLastSeen, socket, onBack, stats }: any) {
   const [newUsername, setNewUsername] = useState(username);
   const [newSeed, setNewSeed] = useState(avatarSeed || username);
+  const [newAbout, setNewAbout] = useState(about || "Active Neural Agent");
+  const [newShowLastSeen, setNewShowLastSeen] = useState(showLastSeen !== false);
   const [status, setStatus] = useState("");
+  const [activeSection, setActiveSection] = useState<'identity' | 'privacy' | 'stats'>('identity');
 
   const handleSave = () => {
     if (!newUsername.trim()) return;
     setUsername(newUsername);
     setAvatarSeed(newSeed);
+    if (setAbout) setAbout(newAbout);
+    if (setShowLastSeen) setShowLastSeen(newShowLastSeen);
     localStorage.setItem("aura_username", newUsername);
-    socket.emit("update_profile", { username: newUsername, avatar: newSeed });
-    setStatus("Neural Signature Synchronized.");
+    socket.emit("update_profile", { username: newUsername, avatar: newSeed, about: newAbout, showLastSeen: newShowLastSeen });
+    setStatus("✓ Profile Synchronized to Neural Grid.");
     setTimeout(() => setStatus(""), 3000);
   }
 
   return (
-    <div className="p-6 md:p-12 w-full h-full overflow-y-auto bg-[#050810] flex flex-col items-center">
-      <div className="w-full max-w-4xl">
-        <div className="flex items-center justify-between mb-12">
-          <div>
-            <h2 className="text-4xl font-black text-white">Agent Profile</h2>
-            <p className="text-emerald-500 font-mono text-sm uppercase tracking-[0.3em]">Hardware ID: {socket.id?.substring(0, 12)}</p>
-          </div>
-          <button onClick={onBack} className="p-3 rounded-full bg-white/5 hover:bg-white/10 text-white transition-all border border-white/10">
-            <X className="w-6 h-6" />
+    <div className="p-4 md:p-8 w-full h-full overflow-y-auto bg-[#050810] flex flex-col items-center">
+      <div className="w-full max-w-2xl">
+
+        {/* Header */}
+        <div className="flex items-center gap-4 mb-8">
+          <button onClick={onBack} className="p-2 rounded-full bg-white/5 hover:bg-white/10 text-white transition-all border border-white/10">
+            <X className="w-5 h-5" />
           </button>
+          <div>
+            <h2 className="text-2xl font-black text-white">Edit Profile</h2>
+            <p className="text-emerald-500 font-mono text-[10px] uppercase tracking-[0.3em]">Neural ID: {socket.id?.substring(0, 12)}</p>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Column: Avatar & Main Identity */}
-          <div className="lg:col-span-1 flex flex-col items-center p-8 bg-[#0c1222] border border-white/5 rounded-3xl shadow-2xl">
-            <div className="relative mb-6 group cursor-pointer" onClick={() => document.getElementById('dp-upload')?.click()}>
-              <div className="w-48 h-48 rounded-full bg-emerald-500/10 flex items-center justify-center border-4 border-emerald-500/30 overflow-hidden shadow-[0_0_40px_rgba(16,185,129,0.2)]">
-                <img src={newSeed?.startsWith('data:image') ? newSeed : `https://api.dicebear.com/7.x/bottts/svg?seed=${newSeed}`} alt="avatar" className="w-full h-full object-cover" />
-                <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-full">
-                  <span className="text-white text-sm font-bold uppercase tracking-wider">Change DP</span>
-                </div>
-              </div>
-              <input type="file" id="dp-upload" accept="image/*" className="hidden" onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  const reader = new FileReader();
-                  reader.onload = (ev) => setNewSeed(ev.target?.result as string);
-                  reader.readAsDataURL(file);
-                }
-              }} />
-              <div className="absolute -bottom-2 right-4 w-10 h-10 bg-emerald-500 rounded-full flex items-center justify-center border-4 border-[#0c1222] text-[#050810]">
-                <ShieldCheck className="w-5 h-5" />
+        {/* DP Section — WhatsApp style large centered avatar */}
+        <div className="flex flex-col items-center mb-8">
+          <div
+            className="relative w-32 h-32 rounded-full cursor-pointer group"
+            onClick={() => document.getElementById('dp-upload')?.click()}
+          >
+            <img
+              src={newSeed?.startsWith('data:image') ? newSeed : `https://api.dicebear.com/7.x/bottts/svg?seed=${newSeed}`}
+              alt="profile"
+              className="w-full h-full rounded-full object-cover border-4 border-emerald-500/40 shadow-[0_0_30px_rgba(16,185,129,0.3)]"
+            />
+            {/* Hover overlay */}
+            <div className="absolute inset-0 bg-black/60 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200">
+              <span className="text-white text-xs font-bold uppercase tracking-wide">📷</span>
+              <span className="text-white text-[10px] mt-1">Change</span>
+            </div>
+          </div>
+          <input
+            type="file"
+            id="dp-upload"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = (ev) => setNewSeed(ev.target?.result as string);
+                reader.readAsDataURL(file);
+              }
+            }}
+          />
+          <p className="mt-3 text-gray-400 text-xs font-mono">Tap avatar to upload photo from device</p>
+        </div>
+
+        {/* Tab nav */}
+        <div className="flex gap-1 mb-6 bg-white/5 rounded-xl p-1 border border-white/5">
+          {(['identity', 'privacy', 'stats'] as const).map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveSection(tab)}
+              className={`flex-1 py-2 rounded-lg text-xs font-bold font-mono uppercase tracking-widest transition-all ${activeSection === tab ? 'bg-emerald-500 text-[#050810]' : 'text-gray-400 hover:text-white'}`}
+            >
+              {tab === 'identity' ? '👤 Identity' : tab === 'privacy' ? '🔒 Privacy' : '📊 Stats'}
+            </button>
+          ))}
+        </div>
+
+        {/* IDENTITY TAB */}
+        {activeSection === 'identity' && (
+          <div className="space-y-5 p-6 bg-[#0c1222] border border-white/5 rounded-3xl">
+            <div>
+              <label className="text-[10px] text-gray-500 font-mono uppercase mb-2 block tracking-widest">Display Name</label>
+              <input
+                type="text"
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                className="w-full bg-[#050810] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-all font-mono text-sm"
+                placeholder="Your display name"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-500 font-mono uppercase mb-2 block tracking-widest">About (Bio)</label>
+              <textarea
+                value={newAbout}
+                onChange={(e) => setNewAbout(e.target.value)}
+                rows={3}
+                maxLength={140}
+                className="w-full bg-[#050810] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-all font-mono text-sm resize-none"
+                placeholder="Hey there! I'm using AURA-OS..."
+              />
+              <p className="text-right text-gray-600 text-[10px] font-mono mt-1">{newAbout.length}/140</p>
+            </div>
+
+            {/* Quick About Suggestions */}
+            <div>
+              <p className="text-[10px] text-gray-600 font-mono uppercase tracking-widest mb-2">Quick Status</p>
+              <div className="flex flex-wrap gap-2">
+                {["Available ✅", "Busy 🔴", "At school 📚", "At work 💼", "Gaming 🎮", "Sleeping 😴"].map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setNewAbout(s)}
+                    className="px-3 py-1.5 bg-white/5 border border-white/10 text-gray-400 text-[10px] font-mono rounded-full hover:bg-emerald-500/10 hover:border-emerald-500/30 hover:text-emerald-400 transition-all"
+                  >
+                    {s}
+                  </button>
+                ))}
               </div>
             </div>
-            <h3 className="text-2xl font-bold text-white mb-1">{username}</h3>
-            <p className="text-emerald-500 text-xs font-mono uppercase mb-6 tracking-widest">Active Neural Link</p>
 
-            <div className="w-full space-y-4 border-t border-white/5 pt-6">
+            <button onClick={handleSave} className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-[#050810] rounded-xl font-black text-sm transition-all shadow-lg shadow-emerald-500/20 uppercase tracking-widest">
+              Save Changes
+            </button>
+            {status && <p className="text-emerald-400 text-center text-xs font-mono animate-pulse">{status}</p>}
+
+            <button
+              onClick={() => { localStorage.removeItem("aura_username"); window.location.reload(); }}
+              className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/30 rounded-xl font-bold text-xs transition-all uppercase tracking-widest"
+            >
+              Sign Out / De-authorize
+            </button>
+          </div>
+        )}
+
+        {/* PRIVACY TAB */}
+        {activeSection === 'privacy' && (
+          <div className="space-y-4 p-6 bg-[#0c1222] border border-white/5 rounded-3xl">
+            <h4 className="text-white font-bold text-sm mb-4 flex items-center gap-2">
+              <Lock className="w-4 h-4 text-cyan-500" /> Privacy Settings
+            </h4>
+
+            {/* Last Seen Toggle */}
+            <div className="flex items-center justify-between py-4 border-b border-white/5">
               <div>
-                <label className="text-[10px] text-gray-500 font-mono uppercase mb-2 block">Identity Alias</label>
-                <input
-                  type="text"
-                  value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  className="w-full bg-[#050810] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-all font-mono text-sm"
-                />
+                <p className="text-white text-sm font-semibold">Last Seen</p>
+                <p className="text-gray-500 text-xs font-mono mt-0.5">Show others when you were last active</p>
               </div>
-              <div>
-                <label className="text-[10px] text-gray-500 font-mono uppercase mb-2 block">Avatar Seed (Update DP)</label>
-                <input
-                  type="text"
-                  value={newSeed}
-                  onChange={(e) => setNewSeed(e.target.value)}
-                  className="w-full bg-[#050810] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-all font-mono text-sm"
-                  placeholder="Type anything to change avatar"
-                />
-              </div>
-              <button onClick={handleSave} className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-[#050810] rounded-xl font-black text-sm transition-all shadow-lg shadow-emerald-500/20 uppercase tracking-widest">
-                Save Changes
-              </button>
               <button
-                onClick={() => {
-                  localStorage.removeItem("aura_username");
-                  window.location.reload();
-                }}
-                className="w-full py-4 mt-4 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/30 rounded-xl font-bold text-sm transition-all uppercase tracking-widest"
+                onClick={() => setNewShowLastSeen(!newShowLastSeen)}
+                className={`relative w-12 h-6 rounded-full transition-all duration-300 ${newShowLastSeen ? 'bg-emerald-500' : 'bg-white/10'}`}
               >
-                Sign Out / De-authorize
+                <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all duration-300 ${newShowLastSeen ? 'left-7' : 'left-1'}`} />
               </button>
-              {status && <p className="text-emerald-500 text-center text-[10px] font-mono animate-pulse">{status}</p>}
-            </div>
-          </div>
-
-          {/* Right Column: Detailed Stats & Hardware Info */}
-          <div className="lg:col-span-2 space-y-8">
-            <div className="p-8 bg-[#0c1222] border border-white/5 rounded-3xl">
-              <h4 className="text-white font-bold mb-6 flex items-center gap-2"><LayoutDashboard className="w-5 h-5 text-emerald-500" /> Activity Analytics</h4>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
-                <div className="space-y-1">
-                  <p className="text-gray-500 text-[10px] uppercase font-mono tracking-tighter">Messages Sent</p>
-                  <p className="text-2xl font-bold text-white tracking-tight">{stats.totalMessages}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-gray-500 text-[10px] uppercase font-mono tracking-tighter">System Uptime</p>
-                  <p className="text-2xl font-bold text-white tracking-tight">99.98%</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-gray-500 text-[10px] uppercase font-mono tracking-tighter">Neural Nodes</p>
-                  <p className="text-2xl font-bold text-white tracking-tight">512 Core</p>
-                </div>
-              </div>
             </div>
 
-            <div className="p-8 bg-[#0c1222] border border-white/5 rounded-3xl">
-              <h4 className="text-white font-bold mb-6 flex items-center gap-2"><Lock className="w-5 h-5 text-cyan-500" /> Encryption Protocol</h4>
-              <div className="space-y-4 font-mono text-[11px]">
-                <div className="flex justify-between items-center py-2 border-b border-white/5 text-gray-400">
-                  <span>Algorithm:</span>
-                  <span className="text-cyan-400">AES-256-GCM / RSA-4096</span>
-                </div>
-                <div className="flex justify-between items-center py-2 border-b border-white/5 text-gray-400">
-                  <span>Tunnel Status:</span>
-                  <span className="text-emerald-400 font-bold">SECURED</span>
-                </div>
-                <div className="flex justify-between items-center py-2 text-gray-400">
-                  <span>Node Location:</span>
-                  <span>Shadow-Server [v3.1]</span>
-                </div>
+            {/* Read Receipts (display only) */}
+            <div className="flex items-center justify-between py-4 border-b border-white/5">
+              <div>
+                <p className="text-white text-sm font-semibold">Read Receipts</p>
+                <p className="text-gray-500 text-xs font-mono mt-0.5">Show double-tick when messages are read</p>
+              </div>
+              <span className="text-emerald-400 text-xs font-mono font-bold">ALWAYS ON</span>
+            </div>
+
+            {/* Message auto-save note */}
+            <div className="flex items-center justify-between py-4">
+              <div>
+                <p className="text-white text-sm font-semibold">Message Persistence</p>
+                <p className="text-gray-500 text-xs font-mono mt-0.5">Messages are stored securely on the server</p>
+              </div>
+              <span className="text-cyan-400 text-xs font-mono font-bold">ENCRYPTED</span>
+            </div>
+
+            <button
+              onClick={handleSave}
+              className="w-full py-4 mt-2 bg-cyan-500 hover:bg-cyan-400 text-[#050810] rounded-xl font-black text-sm transition-all shadow-lg shadow-cyan-500/20 uppercase tracking-widest"
+            >
+              Save Privacy Settings
+            </button>
+            {status && <p className="text-emerald-400 text-center text-xs font-mono animate-pulse">{status}</p>}
+          </div>
+        )}
+
+        {/* STATS TAB */}
+        {activeSection === 'stats' && (
+          <div className="space-y-4 p-6 bg-[#0c1222] border border-white/5 rounded-3xl">
+            <h4 className="text-white font-bold text-sm mb-4 flex items-center gap-2">
+              <LayoutDashboard className="w-4 h-4 text-emerald-500" /> Activity Analytics
+            </h4>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-4 bg-[#050810] rounded-2xl border border-white/5">
+                <p className="text-gray-500 text-[10px] uppercase font-mono">Messages Sent</p>
+                <p className="text-3xl font-black text-white mt-1">{stats?.totalMessages || 0}</p>
+              </div>
+              <div className="p-4 bg-[#050810] rounded-2xl border border-white/5">
+                <p className="text-gray-500 text-[10px] uppercase font-mono">System Uptime</p>
+                <p className="text-3xl font-black text-emerald-400 mt-1">99.9%</p>
               </div>
             </div>
+            <div className="mt-4 p-4 bg-[#050810] rounded-2xl border border-white/5 font-mono text-[11px] space-y-3">
+              <div className="flex justify-between text-gray-400"><span>Encryption:</span><span className="text-cyan-400">AES-256-GCM</span></div>
+              <div className="flex justify-between text-gray-400"><span>Tunnel Status:</span><span className="text-emerald-400 font-bold">SECURED</span></div>
+              <div className="flex justify-between text-gray-400"><span>Node:</span><span>Shadow-Server [v3.1]</span></div>
+              <div className="flex justify-between text-gray-400"><span>Socket ID:</span><span className="text-purple-400">{socket.id?.substring(0, 14)}</span></div>
+            </div>
           </div>
-        </div>
+        )}
+
       </div>
     </div>
   )

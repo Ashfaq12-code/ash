@@ -129,11 +129,17 @@ const neuralAgents = [
 
 const broadcastUsers = () => {
     const allUsers = [
-        ...Array.from(activeUsers.values()).map(u => ({
-            ...u,
-            lastSeen: db.users[u.username]?.lastSeen || null
-        })),
-        ...neuralAgents
+        ...Array.from(activeUsers.values()).map(u => {
+            const dbUser = db.users[u.username];
+            const showLS = dbUser ? dbUser.showLastSeen !== false : true;
+            return {
+                ...u,
+                about: dbUser?.about || "Active Neural Agent",
+                showLastSeen: showLS,
+                lastSeen: showLS ? (dbUser?.lastSeen || null) : null
+            };
+        }),
+        ...neuralAgents.map(a => ({ ...a, about: a.persona || "AURA Bot Neural Link" }))
     ];
     io.emit("update_users", allUsers);
     broadcastStats();
@@ -186,14 +192,16 @@ io.on("connection", (socket) => {
             hasClaimedBonus: false,
             history: [{ type: 'cash_in', amount: 15000, reason: 'Registration Welcome Bonus 🎁', date: new Date().toISOString() }],
             inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
-            avatar: username
+            avatar: username,
+            about: "Active Neural Agent",
+            showLastSeen: true
         };
         saveDb();
 
-        const userObj = { id: socket.id, username, status: "online", joinTime: new Date(), avatar: username };
+        const userObj = { id: socket.id, username, status: "online", joinTime: new Date(), avatar: username, about: "Active Neural Agent", showLastSeen: true };
         activeUsers.set(socket.id, userObj);
 
-        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory, avatar: username });
+        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory, avatar: username, about: "Active Neural Agent", showLastSeen: true });
         socket.emit("wallet_update", db.users[username]);
         broadcastUsers();
         triggerWelcomeGreeting(socket, username);
@@ -208,10 +216,25 @@ io.on("connection", (socket) => {
             return socket.emit("auth_error", "Incorrect security credentials.");
         }
 
-        const userObj = { id: socket.id, username, status: "online", joinTime: new Date(), avatar: db.users[username].avatar || username };
+        const userObj = { 
+            id: socket.id, 
+            username, 
+            status: "online", 
+            joinTime: new Date(), 
+            avatar: db.users[username].avatar || username,
+            about: db.users[username].about || "Active Neural Agent",
+            showLastSeen: db.users[username].showLastSeen !== false
+        };
         activeUsers.set(socket.id, userObj);
 
-        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory, avatar: db.users[username].avatar || username });
+        socket.emit("auth_success", { 
+            username, 
+            wallet: db.users[username].wallet, 
+            inventory: db.users[username].inventory, 
+            avatar: db.users[username].avatar || username,
+            about: db.users[username].about || "Active Neural Agent",
+            showLastSeen: db.users[username].showLastSeen !== false
+        });
         socket.emit("wallet_update", db.users[username]);
         broadcastUsers();
         triggerWelcomeGreeting(socket, username);
@@ -244,17 +267,34 @@ io.on("connection", (socket) => {
                 hasClaimedBonus: false,
                 history: [{ type: 'cash_in', amount: 15000, reason: 'First Login Bonus', date: new Date().toISOString() }],
                 inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
-                avatar: targetUsername
+                avatar: targetUsername,
+                about: "Active Neural Agent",
+                showLastSeen: true
             };
             saveDb();
         }
 
         console.log("[SERVER] Emitting auth_success for:", targetUsername);
 
-        const userObj = { id: socket.id, username: targetUsername, status: "online", joinTime: new Date(), avatar: db.users[targetUsername].avatar || targetUsername };
+        const userObj = { 
+            id: socket.id, 
+            username: targetUsername, 
+            status: "online", 
+            joinTime: new Date(), 
+            avatar: db.users[targetUsername].avatar || targetUsername,
+            about: db.users[targetUsername].about || "Active Neural Agent",
+            showLastSeen: db.users[targetUsername].showLastSeen !== false
+        };
         activeUsers.set(socket.id, userObj);
 
-        socket.emit("auth_success", { username: targetUsername, wallet: db.users[targetUsername].wallet, inventory: db.users[targetUsername].inventory, avatar: db.users[targetUsername].avatar || targetUsername });
+        socket.emit("auth_success", { 
+            username: targetUsername, 
+            wallet: db.users[targetUsername].wallet, 
+            inventory: db.users[targetUsername].inventory, 
+            avatar: db.users[targetUsername].avatar || targetUsername,
+            about: db.users[targetUsername].about || "Active Neural Agent",
+            showLastSeen: db.users[targetUsername].showLastSeen !== false
+        });
         socket.emit("wallet_update", db.users[targetUsername]);
         broadcastUsers();
         triggerWelcomeGreeting(socket, targetUsername);
@@ -1083,6 +1123,8 @@ io.on("connection", (socket) => {
         const oldUsername = user.username;
         const newUsername = data.username ? data.username.trim() : "";
         const newAvatar = data.avatar || "";
+        const newAbout = data.about || "Active Neural Agent";
+        const newShowLastSeen = data.showLastSeen !== false;
 
         if (newUsername && newUsername !== oldUsername) {
             // Check if another active user is using the new username
@@ -1096,7 +1138,9 @@ io.on("connection", (socket) => {
                 const userData = db.users[oldUsername];
                 db.users[newUsername] = {
                     ...userData,
-                    avatar: newAvatar
+                    avatar: newAvatar,
+                    about: newAbout,
+                    showLastSeen: newShowLastSeen
                 };
                 delete db.users[oldUsername];
             } else {
@@ -1106,7 +1150,9 @@ io.on("connection", (socket) => {
                     hasClaimedBonus: false,
                     history: [],
                     inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
-                    avatar: newAvatar
+                    avatar: newAvatar,
+                    about: newAbout,
+                    showLastSeen: newShowLastSeen
                 };
             }
 
@@ -1125,8 +1171,12 @@ io.on("connection", (socket) => {
         }
 
         user.avatar = newAvatar;
+        user.about = newAbout;
+        user.showLastSeen = newShowLastSeen;
         if (db.users[user.username]) {
             db.users[user.username].avatar = newAvatar;
+            db.users[user.username].about = newAbout;
+            db.users[user.username].showLastSeen = newShowLastSeen;
         }
 
         saveDb();
@@ -1137,7 +1187,9 @@ io.on("connection", (socket) => {
             username: user.username,
             wallet: db.users[user.username]?.wallet || 15000,
             inventory: db.users[user.username]?.inventory || { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
-            avatar: user.avatar
+            avatar: user.avatar,
+            about: user.about,
+            showLastSeen: user.showLastSeen
         });
 
         broadcastUsers();
