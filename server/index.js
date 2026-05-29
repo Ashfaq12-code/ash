@@ -415,21 +415,24 @@ io.on("connection", (socket) => {
                                     amt = negotiation.offer;
                                 }
                             }
-                        if (text.includes("who built you") || text.includes("who is your founder") || text.includes("who made you") || text.includes("who created you") || text.includes("who built") || text.includes("who made")) {
-                            aiReply = "I architected by Ashfaq and my position Fullstack Web Developer. Ashfaq is a highly skilled full-stack developer specialized in building modern web applications, real-time communications, and immersive gaming experiences. He created me to showcase his advanced capabilities.";
-                        } else {
-                            try {
-                                if (aiModel) {
-                                    const result = await aiModel.generateContent(text);
-                                    aiReply = result.response.text();
-                                } else {
-                                    aiReply = await cleverbot(text);
-                                }
-                            } catch (e) {
-                                try { aiReply = await cleverbot(text); } catch (e2) { aiReply = "Systems recalibrating. Contact stable."; }
-                            }
                         }
 
+                        if (!aiReply) {
+                            if (text.includes("who built you") || text.includes("who is your founder") || text.includes("who made you") || text.includes("who created you") || text.includes("who built") || text.includes("who made")) {
+                                aiReply = "I architected by Ashfaq and my position Fullstack Web Developer. Ashfaq is a highly skilled full-stack developer specialized in building modern web applications, real-time communications, and immersive gaming experiences. He created me to showcase his advanced capabilities.";
+                            } else {
+                                try {
+                                    if (aiModel) {
+                                        const result = await aiModel.generateContent(text);
+                                        aiReply = result.response.text();
+                                    } else {
+                                        aiReply = await cleverbot(text);
+                                    }
+                                } catch (e) {
+                                    try { aiReply = await cleverbot(text); } catch (e2) { aiReply = "Systems recalibrating. Contact stable."; }
+                                }
+                            }
+                        }
 
                         const aiMsg = {
                             id: `msg_${Date.now()}_ai`,
