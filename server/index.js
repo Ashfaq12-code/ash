@@ -185,14 +185,15 @@ io.on("connection", (socket) => {
             wallet: 15000,
             hasClaimedBonus: false,
             history: [{ type: 'cash_in', amount: 15000, reason: 'Registration Welcome Bonus 🎁', date: new Date().toISOString() }],
-            inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' }
+            inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
+            avatar: username
         };
         saveDb();
 
-        const userObj = { id: socket.id, username, status: "online", joinTime: new Date() };
+        const userObj = { id: socket.id, username, status: "online", joinTime: new Date(), avatar: username };
         activeUsers.set(socket.id, userObj);
 
-        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory });
+        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory, avatar: username });
         socket.emit("wallet_update", db.users[username]);
         broadcastUsers();
         triggerWelcomeGreeting(socket, username);
@@ -207,10 +208,10 @@ io.on("connection", (socket) => {
             return socket.emit("auth_error", "Incorrect security credentials.");
         }
 
-        const userObj = { id: socket.id, username, status: "online", joinTime: new Date() };
+        const userObj = { id: socket.id, username, status: "online", joinTime: new Date(), avatar: db.users[username].avatar || username };
         activeUsers.set(socket.id, userObj);
 
-        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory });
+        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory, avatar: db.users[username].avatar || username });
         socket.emit("wallet_update", db.users[username]);
         broadcastUsers();
         triggerWelcomeGreeting(socket, username);
@@ -242,17 +243,18 @@ io.on("connection", (socket) => {
                 wallet: 15000,
                 hasClaimedBonus: false,
                 history: [{ type: 'cash_in', amount: 15000, reason: 'First Login Bonus', date: new Date().toISOString() }],
-                inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' }
+                inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
+                avatar: targetUsername
             };
             saveDb();
         }
 
         console.log("[SERVER] Emitting auth_success for:", targetUsername);
 
-        const userObj = { id: socket.id, username: targetUsername, status: "online", joinTime: new Date() };
+        const userObj = { id: socket.id, username: targetUsername, status: "online", joinTime: new Date(), avatar: db.users[targetUsername].avatar || targetUsername };
         activeUsers.set(socket.id, userObj);
 
-        socket.emit("auth_success", { username: targetUsername, wallet: db.users[targetUsername].wallet, inventory: db.users[targetUsername].inventory });
+        socket.emit("auth_success", { username: targetUsername, wallet: db.users[targetUsername].wallet, inventory: db.users[targetUsername].inventory, avatar: db.users[targetUsername].avatar || targetUsername });
         socket.emit("wallet_update", db.users[targetUsername]);
         broadcastUsers();
         triggerWelcomeGreeting(socket, targetUsername);
@@ -413,6 +415,8 @@ io.on("connection", (socket) => {
                                     amt = negotiation.offer;
                                 }
                             }
+                        if (text.includes("who built you") || text.includes("who is your founder") || text.includes("who made you") || text.includes("who created you") || text.includes("who built") || text.includes("who made")) {
+                            aiReply = "I architected by Ashfaq and my position Fullstack Web Developer. Ashfaq is a highly skilled full-stack developer specialized in building modern web applications, real-time communications, and immersive gaming experiences. He created me to showcase his advanced capabilities.";
                         } else {
                             try {
                                 if (aiModel) {
@@ -425,6 +429,7 @@ io.on("connection", (socket) => {
                                 try { aiReply = await cleverbot(text); } catch (e2) { aiReply = "Systems recalibrating. Contact stable."; }
                             }
                         }
+
 
                         const aiMsg = {
                             id: `msg_${Date.now()}_ai`,
@@ -876,7 +881,7 @@ io.on("connection", (socket) => {
         } catch (e) {}
 
         // Start a community invite timer: wait 25s for human players, then fill with bots
-        if (!inviteTimers.has(game.roomId)) {
+        if (!data.targetId && !data.targetName && !inviteTimers.has(game.roomId)) {
             const t = setTimeout(() => {
                 const g = ludoRooms.get(game.roomId);
                 if (g) {
@@ -1067,6 +1072,72 @@ io.on("connection", (socket) => {
 
         saveDb();
         socket.emit('wallet_update', u);
+    });
+
+    socket.on("update_profile", (data) => {
+        const user = activeUsers.get(socket.id);
+        if (!user) return;
+        const oldUsername = user.username;
+        const newUsername = data.username ? data.username.trim() : "";
+        const newAvatar = data.avatar || "";
+
+        if (newUsername && newUsername !== oldUsername) {
+            // Check if another active user is using the new username
+            const isTaken = Array.from(activeUsers.values()).some(u => u.id !== socket.id && u.username.toLowerCase() === newUsername.toLowerCase());
+            if (isTaken) {
+                return socket.emit("auth_error", "Username already taken by another active user.");
+            }
+
+            // Rename key in db if exists
+            if (db.users[oldUsername]) {
+                const userData = db.users[oldUsername];
+                db.users[newUsername] = {
+                    ...userData,
+                    avatar: newAvatar
+                };
+                delete db.users[oldUsername];
+            } else {
+                db.users[newUsername] = {
+                    password: "",
+                    wallet: 15000,
+                    hasClaimedBonus: false,
+                    history: [],
+                    inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
+                    avatar: newAvatar
+                };
+            }
+
+            // Update user in memory
+            user.username = newUsername;
+
+            // Update all historical messages in the database
+            db.messages.forEach(m => {
+                if (m.senderUsername === oldUsername) {
+                    m.senderUsername = newUsername;
+                }
+                if (m.targetUsername === oldUsername) {
+                    m.targetUsername = newUsername;
+                }
+            });
+        }
+
+        user.avatar = newAvatar;
+        if (db.users[user.username]) {
+            db.users[user.username].avatar = newAvatar;
+        }
+
+        saveDb();
+        activeUsers.set(socket.id, user);
+
+        // Send auth success so client updates local state
+        socket.emit("auth_success", {
+            username: user.username,
+            wallet: db.users[user.username]?.wallet || 15000,
+            inventory: db.users[user.username]?.inventory || { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
+            avatar: user.avatar
+        });
+
+        broadcastUsers();
     });
 
     socket.on("logout", () => {

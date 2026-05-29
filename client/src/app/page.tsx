@@ -129,6 +129,7 @@ export default function App() {
 
     const onAuthSuccess = (data: any) => {
       setUsername(data.username);
+      if (data.avatar) setAvatarSeed(data.avatar);
       setIsAuthenticated(true);
       localStorage.setItem("aura_username", data.username);
       setIsAutoAuthenticating(false);
@@ -142,8 +143,9 @@ export default function App() {
     };
   }, []);
 
-  const handleAuth = (name: string) => {
+  const handleAuth = (name: string, avatar?: string) => {
     setUsername(name);
+    if (avatar) setAvatarSeed(avatar);
     setIsAuthenticated(true);
     setIsGuest(false);
     localStorage.setItem("aura_username", name);
@@ -181,7 +183,7 @@ export default function App() {
   );
 }
 
-function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Socket | null, connectedUrl: string, onAuth: (name: string) => void, onGuest: () => void }) {
+function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Socket | null, connectedUrl: string, onAuth: (name: string, avatar?: string) => void, onGuest: () => void }) {
   const [loginMode, setLoginMode] = useState<"face" | "clap" | "credentials">("face");
 
   // Credentials State
@@ -245,7 +247,7 @@ function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Soc
       if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
       setIsSubmitting(false);
       setIsRegistering(false);
-      onAuth(data.username);
+      onAuth(data.username, data.avatar);
     };
     const handleError = (msg: string) => {
       if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
@@ -1371,7 +1373,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
             className={`w-10 h-10 md:w-12 md:h-12 rounded-2xl border-2 flex items-center justify-center transition-all overflow-hidden md:mt-auto md:mb-4 ${activeTab === 'profile' ? 'border-emerald-500 bg-emerald-500/10 shadow-[0_0_20px_rgba(16,185,129,0.3)]' : 'border-white/10 hover:border-white/20'}`}
             title="Edit Profile"
           >
-            <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${avatarSeed || username}`} alt="avatar" className="w-8 h-8 md:w-10 md:h-10 rounded-xl" />
+            <img src={String(avatarSeed || username || "").startsWith("data:image") ? avatarSeed || username : `https://api.dicebear.com/7.x/bottts/svg?seed=${avatarSeed || username}`} alt="avatar" className="w-8 h-8 md:w-10 md:h-10 rounded-xl" />
           </button>
         </div>
       </nav>
@@ -1411,7 +1413,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
                             <div key={user.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 transition-all">
                               <div className="flex items-center gap-2">
                                 <div className="w-8 h-8 rounded-full border border-white/10 overflow-hidden bg-[#050810]">
-                                  <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} className="w-full h-full" />
+                                  <img src={String(user.username || "").startsWith("data:image") ? user.username : `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} className="w-full h-full" />
                                 </div>
                                 <div>
                                   <h4 className="text-white text-xs font-bold font-mono">{displayName}</h4>
@@ -1671,7 +1673,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
               <div className="flex items-center gap-4 mb-4">
                 <div className="relative">
                   <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/30 overflow-hidden">
-                    <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${invite.fromName}`} className="w-full h-full" />
+                    <img src={String(invite.fromName || "").startsWith("data:image") ? invite.fromName : `https://api.dicebear.com/7.x/bottts/svg?seed=${invite.fromName}`} className="w-full h-full" />
                   </div>
                   <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full animate-ping"></div>
                 </div>
@@ -1714,7 +1716,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
               className="absolute top-0 right-10 bg-[#0f1b29] border border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] rounded-xl p-4 z-50 flex items-center gap-4 cursor-pointer hover:bg-[#162638] transition-all"
             >
               <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
-                <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${toast.name}`} className="w-8 h-8 rounded-full" />
+                <img src={String(toast.name || "").startsWith("data:image") ? toast.name : `https://api.dicebear.com/7.x/bottts/svg?seed=${toast.name}`} className="w-8 h-8 rounded-full" />
               </div>
               <div className="flex-1 overflow-hidden">
                 <h4 className="text-emerald-400 font-bold text-sm truncate">{toast.name}</h4>
@@ -1729,7 +1731,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
           {incomingCall && !activeCall && (
             <motion.div initial={{ y: -100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -100, opacity: 0 }} className="absolute top-10 left-1/2 -translate-x-1/2 bg-[#0c1222] border border-emerald-500 shadow-[0_0_50px_rgba(16,185,129,0.3)] rounded-2xl p-6 z-50 flex items-center gap-6">
               <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center animate-pulse">
-                <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${incomingCall.callerName}`} className="w-12 h-12 rounded-full" />
+                <img src={String(incomingCall.callerName || "").startsWith("data:image") ? incomingCall.callerName : `https://api.dicebear.com/7.x/bottts/svg?seed=${incomingCall.callerName}`} className="w-12 h-12 rounded-full" />
               </div>
               <div>
                 <h3 className="text-xl font-bold text-white">Incoming Secure Call</h3>
@@ -1936,7 +1938,7 @@ function OnlineUsersDirectory({ onlineUsers, onCall, onChat }: { onlineUsers: an
                   {/* Avatar */}
                   <div className="flex flex-col items-center mb-4">
                     <div className={`relative w-16 h-16 rounded-2xl border-2 ${isOnline ? 'border-cyan-500/40 shadow-[0_0_15px_rgba(6,182,212,0.2)]' : 'border-white/10'} bg-[#0c1525] overflow-hidden`}>
-                      <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} alt="avatar" className="w-full h-full" />
+                      <img src={String(user.username || "").startsWith("data:image") ? user.username : `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} alt="avatar" className="w-full h-full" />
                     </div>
                     <h3 className="text-white font-black text-[15px] font-mono mt-3 truncate max-w-full">{user.username}</h3>
                     <span className={`mt-1 text-[10px] font-bold font-mono px-2 py-0.5 rounded-full border ${roleStyle}`}>
@@ -1981,7 +1983,7 @@ function ChatListItem({ name, lastMsg, time, active, onClick, isGlobal, status, 
     <button onClick={onClick} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${active ? 'bg-emerald-500/10 border border-emerald-500/20' : 'hover:bg-white/5 border border-transparent'} ${status === 'offline' ? 'opacity-50' : ''} ${hasUnread ? 'bg-white/5' : ''}`}>
       <div className="relative shrink-0">
         <div className={`w-12 h-12 rounded-full border border-white/10 p-[2px] ${isGlobal ? 'bg-emerald-500/20' : 'bg-[#050810]'}`}>
-          <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${name}`} className="w-full h-full rounded-full" />
+          <img src={String(name || "").startsWith("data:image") ? name : `https://api.dicebear.com/7.x/bottts/svg?seed=${name}`} className="w-full h-full rounded-full" />
         </div>
         {!isGlobal && <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#0b121f] ${status === 'online' ? 'bg-emerald-500' : 'bg-gray-600'}`}></div>}
         {hasUnread && !active && <div className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#050810] animate-pulse"></div>}
@@ -2065,10 +2067,21 @@ function ProfilePage({ username, setUsername, avatarSeed, setAvatarSeed, socket,
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column: Avatar & Main Identity */}
           <div className="lg:col-span-1 flex flex-col items-center p-8 bg-[#0c1222] border border-white/5 rounded-3xl shadow-2xl">
-            <div className="relative mb-6">
+            <div className="relative mb-6 group cursor-pointer" onClick={() => document.getElementById('dp-upload')?.click()}>
               <div className="w-48 h-48 rounded-full bg-emerald-500/10 flex items-center justify-center border-4 border-emerald-500/30 overflow-hidden shadow-[0_0_40px_rgba(16,185,129,0.2)]">
-                <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${newSeed}`} alt="avatar" className="w-40 h-40" />
+                <img src={newSeed?.startsWith('data:image') ? newSeed : `https://api.dicebear.com/7.x/bottts/svg?seed=${newSeed}`} alt="avatar" className="w-full h-full object-cover" />
+                <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-full">
+                  <span className="text-white text-sm font-bold uppercase tracking-wider">Change DP</span>
+                </div>
               </div>
+              <input type="file" id="dp-upload" accept="image/*" className="hidden" onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (ev) => setNewSeed(ev.target?.result as string);
+                  reader.readAsDataURL(file);
+                }
+              }} />
               <div className="absolute -bottom-2 right-4 w-10 h-10 bg-emerald-500 rounded-full flex items-center justify-center border-4 border-[#0c1222] text-[#050810]">
                 <ShieldCheck className="w-5 h-5" />
               </div>
@@ -2366,9 +2379,9 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const keySuffix = username;
+      const keySuffix = `${username}_${targetId || 'global'}`;
 
-      const themeVal = localStorage.getItem(`chat_theme_${keySuffix}`);
+      const themeVal = localStorage.getItem(`chat_theme_${username}`);
       setChatTheme(themeVal || "emerald");
 
       const wpVal = localStorage.getItem(`chat_wallpaper_${keySuffix}`);
@@ -2383,7 +2396,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
       const savedContrast = localStorage.getItem(`chat_wallpaper_contrast_${keySuffix}`);
       setWallpaperContrast(savedContrast ? parseInt(savedContrast) : 100);
     }
-  }, [username]);
+  }, [username, targetId]);
 
   const handleWallpaperUpload = (e: any) => {
     const file = e.target.files[0];
@@ -2393,7 +2406,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
         const result = ev.target?.result as string;
         if (result) {
           setChatWallpaper(result);
-          localStorage.setItem(`chat_wallpaper_${username}`, result);
+          localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, result);
         }
       };
       reader.readAsDataURL(file);
@@ -2736,7 +2749,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
           )}
           <div className="relative">
             <div className={`w-12 h-12 rounded-full flex items-center justify-center border ${THEMES[chatTheme].border} overflow-hidden ${!targetId ? 'bg-emerald-500/20' : 'bg-[#050810]'} group-hover:scale-105 transition-transform duration-300`}>
-              <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName}`} className="w-10 h-10" />
+              <img src={String(targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName || "").startsWith("data:image") ? targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName : `https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName}`} className="w-10 h-10" />
             </div>
             {!targetId && <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#090d16] animate-pulse ${chatTheme === 'emerald' ? 'bg-emerald-500' : chatTheme === 'purple' ? 'bg-purple-500' : chatTheme === 'cyan' ? 'bg-cyan-500' : chatTheme === 'amber' ? 'bg-amber-500' : 'bg-rose-500'}`}></div>}
           </div>
@@ -2856,7 +2869,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                 <motion.div key={msg.id || `fallback-msg-${idx}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex w-full gap-3 ${msg.senderName === username ? "flex-row-reverse" : msg.isSystem ? "justify-center" : "flex-row"}`}>
                   {!msg.isSystem && (
                     <div className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1">
-                      <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName}`} className="w-full h-full" />
+                      <img src={String(msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName || "").startsWith("data:image") ? msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName : `https://api.dicebear.com/7.x/bottts/svg?seed=${msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName}`} className="w-full h-full" />
                     </div>
                   )}
 
@@ -3020,7 +3033,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
               {isTargetTyping && (
                 <div key="typing-indicator" className="flex w-full gap-3 flex-row px-4 py-2">
                   <div className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1 bg-[#1e1f22]">
-                    <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? targetName : 'AURA-OS'}`} className="w-full h-full" />
+                    <img src={String(targetId ? targetName : 'AURA-OS').startsWith("data:image") ? (targetId ? targetName : 'AURA-OS') : `https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? targetName : 'AURA-OS'}`} className="w-full h-full" />
                   </div>
                   <div className="flex flex-col items-start max-w-[85%] md:max-w-[70%]">
                     <div className="p-3 px-4 relative bg-[#162032] border border-white/5 rounded-2xl rounded-tl-sm shadow-xl flex items-center gap-1.5 min-h-[40px]">
@@ -3217,7 +3230,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                 {/* Large Avatar */}
                 <div className="text-center">
                   <div className="w-32 h-32 rounded-full mx-auto border-2 border-emerald-500/20 overflow-hidden bg-[#050810] relative group flex items-center justify-center mb-4">
-                    <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName}`} className="w-24 h-24" />
+                    <img src={String(targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName || "").startsWith("data:image") ? targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName : `https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName}`} className="w-24 h-24" />
                   </div>
 
                   {/* Display Name Editing */}
@@ -3305,7 +3318,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                       {Object.keys(WALLPAPERS).map(w => (
                         <button
                           key={w}
-                          onClick={() => { setChatWallpaper(w); localStorage.setItem(`chat_wallpaper_${username}`, w); }}
+                          onClick={() => { setChatWallpaper(w); localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, w); }}
                           className={`py-2 px-3 rounded-xl border text-[10px] font-mono uppercase tracking-wider transition-all ${chatWallpaper === w
                               ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400 font-bold'
                               : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
@@ -3333,7 +3346,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onChange={(e) => {
                           const val = parseFloat(e.target.value);
                           setWallpaperOpacity(val);
-                          localStorage.setItem(`chat_wallpaper_opacity_${username}`, val.toString());
+                          localStorage.setItem(`chat_wallpaper_opacity_${username}_${targetId || 'global'}`, val.toString());
                         }}
                         className="w-full accent-emerald-500 bg-[#050810] h-1.5 rounded-lg appearance-none cursor-pointer animate-pulse"
                       />
@@ -3352,7 +3365,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onChange={(e) => {
                           const val = parseInt(e.target.value);
                           setWallpaperBrightness(val);
-                          localStorage.setItem(`chat_wallpaper_brightness_${username}`, val.toString());
+                          localStorage.setItem(`chat_wallpaper_brightness_${username}_${targetId || 'global'}`, val.toString());
                         }}
                         className="w-full accent-emerald-500 bg-[#050810] h-1.5 rounded-lg appearance-none cursor-pointer"
                       />
@@ -3371,7 +3384,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onChange={(e) => {
                           const val = parseInt(e.target.value);
                           setWallpaperContrast(val);
-                          localStorage.setItem(`chat_wallpaper_contrast_${username}`, val.toString());
+                          localStorage.setItem(`chat_wallpaper_contrast_${username}_${targetId || 'global'}`, val.toString());
                         }}
                         className="w-full accent-emerald-500 bg-[#050810] h-1.5 rounded-lg appearance-none cursor-pointer"
                       />
@@ -3405,7 +3418,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onClick={() => {
                           if (customWallpaperUrl.trim().startsWith('http')) {
                             setChatWallpaper(customWallpaperUrl.trim());
-                            localStorage.setItem(`chat_wallpaper_${username}`, customWallpaperUrl.trim());
+                            localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, customWallpaperUrl.trim());
                           }
                         }}
                         className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-[0_0_15px_rgba(16,185,129,0.3)]"
@@ -3440,7 +3453,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                           img.src = aiUrl;
                           img.onload = () => {
                             setChatWallpaper(aiUrl);
-                            localStorage.setItem(`chat_wallpaper_${username}`, aiUrl);
+                            localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, aiUrl);
                             setIsGeneratingAi(false);
                           };
                           img.onerror = () => {
@@ -4397,7 +4410,7 @@ Aura handles VoIP signaling over WebSockets. Once a Call is requested:
         <div className="h-[52px] bg-[#232428] flex items-center justify-between px-2 shrink-0 border-t border-[#1f2023]/25">
           <div className="flex items-center gap-2 overflow-hidden">
             <div className="relative w-8 h-8 rounded-full border border-white/5 bg-[#050810] shrink-0">
-              <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${username}`} className="w-full h-full" />
+              <img src={String(username || "").startsWith("data:image") ? username : `https://api.dicebear.com/7.x/bottts/svg?seed=${username}`} className="w-full h-full" />
               <div className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#23a55a] border-2 border-[#232428]" />
             </div>
             <div className="overflow-hidden">
@@ -4486,7 +4499,7 @@ Aura handles VoIP signaling over WebSockets. Once a Call is requested:
                         className="group flex gap-4 p-1 rounded hover:bg-white/5 transition-all relative"
                       >
                         <div className="w-10 h-10 rounded-full border border-white/5 overflow-hidden bg-[#1e1f22] shrink-0 mt-0.5 relative">
-                          <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${msg.avatar}`} className="w-full h-full" />
+                          <img src={String(msg.avatar || "").startsWith("data:image") ? msg.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${msg.avatar}`} className="w-full h-full" />
                         </div>
                         <div className="flex-1 overflow-hidden">
                           <div className="flex items-baseline gap-2 mb-1">
@@ -4573,7 +4586,7 @@ Aura handles VoIP signaling over WebSockets. Once a Call is requested:
                   {isTyping && typingUser && (
                     <div className="flex gap-4 p-1">
                       <div className="w-10 h-10 rounded-full border border-white/5 overflow-hidden bg-[#1e1f22] shrink-0 mt-0.5">
-                        <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${typingUser.avatar}`} className="w-full h-full" />
+                        <img src={String(typingUser.avatar || "").startsWith("data:image") ? typingUser.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${typingUser.avatar}`} className="w-full h-full" />
                       </div>
                       <div className="flex-1">
                         <div className="flex items-baseline gap-2 mb-1 font-mono">
@@ -4621,7 +4634,7 @@ Aura handles VoIP signaling over WebSockets. Once a Call is requested:
                               }}
                               className="w-full flex items-center gap-3 px-3 py-2 hover:bg-[#5865F2]/20 transition-all text-left"
                             >
-                              <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${m.avatar}`} className="w-6 h-6 rounded-full border border-white/10" />
+                              <img src={String(m.avatar || "").startsWith("data:image") ? m.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${m.avatar}`} className="w-6 h-6 rounded-full border border-white/10" />
                               <span className="text-sm text-white font-mono font-bold">{m.name}</span>
                               {m.isBot && <span className="bg-[#5865F2] text-white text-[9px] font-bold px-1 py-0.5 rounded uppercase">BOT</span>}
                             </button>
@@ -4824,7 +4837,7 @@ void AMyGameMode::ConnectToAuraServer() {
                 {onlineMembers.map(mem => (
                   <div key={mem.name} className="group flex items-center gap-2 p-1 rounded hover:bg-white/5 transition-all">
                     <div className="w-8 h-8 rounded-full border border-white/5 bg-[#020202] relative shrink-0">
-                      <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${mem.name}`} className="w-full h-full" />
+                      <img src={String(mem.name || "").startsWith("data:image") ? mem.name : `https://api.dicebear.com/7.x/bottts/svg?seed=${mem.name}`} className="w-full h-full" />
                       <div className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#050505] ${(mem.name === username ? 'online' : memberStatuses[mem.name]) === 'online' ? 'bg-[#23a55a]' : 'bg-[#f0b232]'
                         }`} />
                     </div>
@@ -4855,7 +4868,7 @@ void AMyGameMode::ConnectToAuraServer() {
                 {offlineMembers.map(mem => (
                   <div key={mem.name} className="flex items-center gap-2 p-1 rounded hover:bg-white/5 transition-all opacity-50 hover:opacity-100">
                     <div className="w-8 h-8 rounded-full border border-white/5 bg-[#020202] relative shrink-0">
-                      <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${mem.name}`} className="w-full h-full" />
+                      <img src={String(mem.name || "").startsWith("data:image") ? mem.name : `https://api.dicebear.com/7.x/bottts/svg?seed=${mem.name}`} className="w-full h-full" />
                       <div className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#050505] bg-[#80848e]" />
                     </div>
                     <div>

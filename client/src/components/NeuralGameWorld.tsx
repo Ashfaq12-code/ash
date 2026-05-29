@@ -405,6 +405,26 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
     useEffect(() => {
         if (!initialRoomId?.startsWith('AURA-') || !socket) return;
 
+        // If this is a private invite game, do NOT auto-add bots
+        if (pendingAgents && pendingAgents.length > 0) {
+            setDeployPhase('deploying');
+            const invited = pendingAgents.map((a: any) => ({ name: normalizeAgentName(a), status: 'pending' }));
+            setDeployPlayers([
+                { name: 'You', status: 'syncing' },
+                ...invited
+            ]);
+
+            // Create the real game room
+            socket.emit('ludo_create', { name: username, roomId: initialRoomId });
+
+            // Sync host instantly
+            setTimeout(() => {
+                setDeployPlayers(p => p.map((pl, i) => i === 0 ? { ...pl, status: 'synced' } : pl));
+            }, 1000);
+
+            return;
+        }
+
         // Retrieve the simulated agent names and keep display names synced
         const botNames = getDeployBotNames(pendingAgents);
 
@@ -424,31 +444,71 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
         }, 1500);
 
         // Simulate players joining the server room by adding them as bots one by one
-        setTimeout(() => {
+        const t1 = setTimeout(() => {
             setDeployPlayers(p => p.map((pl, i) => i === 1 ? { ...pl, name: botNames[0], status: 'synced' } : pl));
             socket.emit('ludo_add_bot', { name: botNames[0] });
         }, 3000);
 
-        setTimeout(() => {
+        const t2 = setTimeout(() => {
             setDeployPlayers(p => p.map((pl, i) => i === 2 ? { ...pl, name: botNames[1], status: 'synced' } : pl));
             socket.emit('ludo_add_bot', { name: botNames[1] });
         }, 6000);
 
-        setTimeout(() => {
+        const t3 = setTimeout(() => {
             setDeployPlayers(p => p.map((pl, i) => i === 3 ? { ...pl, name: botNames[2], status: 'synced' } : pl));
             socket.emit('ludo_add_bot', { name: botNames[2] });
         }, 9000);
 
         // Auto start the match from host at 11.5s
-        setTimeout(() => {
+        const t4 = setTimeout(() => {
             setDeployPhase('starting');
         }, 10500);
 
-        setTimeout(() => {
+        const t5 = setTimeout(() => {
             setDeployPhase('idle');
             socket.emit('ludo_start');
         }, 11500);
+
+        return () => {
+            clearTimeout(t1);
+            clearTimeout(t2);
+            clearTimeout(t3);
+            clearTimeout(t4);
+            clearTimeout(t5);
+        };
     }, [initialRoomId, socket, pendingAgents]);
+
+    // Real-time synchronization of invited players joining the room
+    useEffect(() => {
+        if (deployPhase === 'deploying' && gameState?.players && pendingAgents && pendingAgents.length > 0) {
+            setDeployPlayers(prev => {
+                return prev.map((p, i) => {
+                    if (i === 0) return { ...p, status: 'synced' };
+                    const gp = gameState.players.find((x: any) => x.name.toLowerCase() === p.name.toLowerCase());
+                    if (gp) {
+                        return { ...p, status: 'synced' };
+                    }
+                    return p;
+                });
+            });
+        }
+    }, [gameState?.players, deployPhase, pendingAgents]);
+
+    // Automatically trigger match start when all invited players are synced
+    useEffect(() => {
+        if (deployPhase === 'deploying' && pendingAgents && pendingAgents.length > 0 && deployPlayers.length >= 2) {
+            const allSynced = deployPlayers.every(p => p.status === 'synced');
+            if (allSynced) {
+                setDeployPhase('starting');
+                const t = setTimeout(() => {
+                    setDeployPhase('idle');
+                    socket?.emit('ludo_start');
+                }, 3000);
+                return () => clearTimeout(t);
+            }
+        }
+    }, [deployPlayers, deployPhase, pendingAgents, socket]);
+
 
     // Countdown sound synchronization
     useEffect(() => {
