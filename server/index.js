@@ -550,24 +550,32 @@ io.on("connection", (socket) => {
             if (data.targetId.startsWith("agent_")) {
                 targetUsername = data.targetId;
             } else {
+                // Try active users first (online)
                 const targetUserObj = activeUsers.get(data.targetId);
                 if (targetUserObj) {
                     targetUsername = targetUserObj.username;
+                } else if (data.targetUsername) {
+                    // User is offline – use username passed from client
+                    targetUsername = data.targetUsername;
+                } else {
+                    // Last resort: scan messages for a matching senderId
+                    const found = db.messages.find(m => m.senderId === data.targetId);
+                    if (found) targetUsername = found.senderUsername;
                 }
             }
             if (myUsername && targetUsername) {
                 history = db.messages.filter(m =>
                     (m.senderUsername === myUsername && m.targetUsername === targetUsername) ||
                     (m.senderUsername === targetUsername && m.targetUsername === myUsername)
-                ).slice(-50);
+                ).slice(-100);
             } else {
                 history = db.messages.filter(m =>
                     (m.senderId === socket.id && m.targetId === data.targetId) ||
                     (m.senderId === data.targetId && m.targetId === socket.id)
-                ).slice(-50);
+                ).slice(-100);
             }
         } else {
-            history = db.messages.filter(m => !m.targetId).slice(-50);
+            history = db.messages.filter(m => !m.targetId).slice(-100);
         }
         socket.emit("chat_history", { targetId: data.targetId, messages: history });
         socket.emit("history", history);

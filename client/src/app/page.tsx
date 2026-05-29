@@ -2611,7 +2611,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
   useEffect(() => {
     if (!socket) return;
 
-    socket.emit("get_history", { targetId });
+    socket.emit("get_history", { targetId, targetUsername: targetName });
 
     socket.on("chat_history", (data: any) => {
       if (data.targetId === targetId) {
@@ -3321,9 +3321,16 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
               <div className="p-6 space-y-8 flex-1">
                 {/* Large Avatar */}
                 <div className="text-center">
-                  <div className="w-32 h-32 rounded-full mx-auto border-2 border-emerald-500/20 overflow-hidden bg-[#050810] relative group flex items-center justify-center mb-4">
-                    <img src={String(targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName || "").startsWith("data:image") ? targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName : `https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName}`} className="w-24 h-24" />
-                  </div>
+                  {(() => {
+                    const contactUser = onlineUsers.find((u: any) => u.id === targetId || u.username === targetName);
+                    const contactAvatar = contactUser?.avatar || targetName || "";
+                    const contactAbout = contactUser?.about || "Active Neural Agent";
+                    const avatarSrc = contactAvatar.startsWith('data:image') ? contactAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${contactAvatar}`;
+                    return (
+                      <>
+                        <div className="w-32 h-32 rounded-full mx-auto border-2 border-emerald-500/20 overflow-hidden bg-[#050810] relative group flex items-center justify-center mb-4">
+                          <img src={avatarSrc} alt="contact" className="w-full h-full object-cover" />
+                        </div>
 
                   {/* Display Name Editing */}
                   <div className="mt-4 flex flex-col items-center">
@@ -3381,7 +3388,17 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                     <p className="text-[10px] font-mono text-gray-500 uppercase mt-1">
                       {targetId ? "Secure Peer Client" : "Global Channel"}
                     </p>
+                    {/* About/Bio section */}
+                    {targetId && (
+                      <div className="mt-3 px-4 py-2 bg-white/5 rounded-xl border border-white/5 max-w-[240px] mx-auto">
+                        <p className="text-[9px] text-gray-600 font-mono uppercase tracking-widest mb-1">About</p>
+                        <p className="text-gray-300 text-xs text-center">{contactAbout}</p>
+                      </div>
+                    )}
                   </div>
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Theme Settings inside Drawer */}
