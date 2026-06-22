@@ -852,7 +852,7 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                         <div key={i} className={`flex items-center gap-4 px-5 py-3 rounded-2xl border transition-all duration-700 ${player.status === 'synced' ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/3 border-white/5 opacity-40'
                             }`}>
                             <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${player.status === 'synced' ? 'bg-emerald-400' : 'bg-gray-600 animate-pulse'}`} />
-                            <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${player.name === 'You' ? username : player.name}`} className="w-9 h-9 rounded-full border border-white/10" />
+                            <img src={String(player.avatar || "").startsWith("data:image") ? player.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${player.name === 'You' ? username : player.name}`} className="w-9 h-9 rounded-full border border-white/10" />
                             <div className="flex-1">
                                 <p className="text-white font-black font-mono text-sm">{player.name === 'You' ? `${username} (You)` : player.name}</p>
                                 <p className={`text-[9px] font-mono ${player.status === 'synced' ? 'text-emerald-400' : 'text-gray-600 animate-pulse'}`}>
@@ -1083,7 +1083,7 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                                 return (
                                     <div key={i} className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/10" style={{ borderLeft: `6px solid ${COLORS[i]}` }}>
                                         <div className="flex items-center gap-4">
-                                            <div className="w-12 h-12 rounded-full border-2 flex items-center justify-center overflow-hidden shrink-0" style={{ borderColor: COLORS[i] }}><img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full bg-[#050810]" /></div>
+                                            <div className="w-12 h-12 rounded-full border-2 flex items-center justify-center overflow-hidden shrink-0" style={{ borderColor: COLORS[i] }}><img src={String(p.avatar || "").startsWith("data:image") ? p.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full object-cover bg-[#050810]" /></div>
                                             <div><h3 className="text-white font-bold">{p.name}</h3><p className="text-xs text-gray-500 font-mono uppercase">{p.isBot ? 'AI Agent' : 'Human'}</p></div>
                                         </div>
                                         {gameState.players[0]?.name === username && i !== 0 && (
@@ -1260,7 +1260,7 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                                 <div key={i} className="flex items-center gap-3 bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 animate-slide-in shadow-xl">
                                     <span className="text-amber-400 font-black text-xs">{i + 1}{i === 0 ? 'ST' : i === 1 ? 'ND' : i === 2 ? 'RD' : 'TH'}</span>
                                     <div className="w-8 h-8 rounded-full border-2 overflow-hidden shrink-0" style={{ borderColor: COLORS[pIdx] }}>
-                                        <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${gameState.players?.[pIdx]?.avatar || gameState.players?.[pIdx]?.name}`} className="w-full h-full bg-[#050810]" />
+                                        <img src={String(gameState.players?.[pIdx]?.avatar || "").startsWith("data:image") ? gameState.players?.[pIdx]?.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${gameState.players?.[pIdx]?.avatar || gameState.players?.[pIdx]?.name}`} className="w-full h-full object-cover bg-[#050810]" />
                                     </div>
                                     <span className="text-white font-bold text-xs truncate max-w-[80px]">{gameState.players?.[pIdx]?.name}</span>
                                 </div>
@@ -1374,7 +1374,7 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                                 }
                                 return (
                                     <div key={i} className={`flex items-center gap-6 bg-[#0c1222] p-4 rounded-3xl border shadow-2xl ${i === 0 ? 'border-amber-400' : 'border-white/10'}`}>
-                                        <div className="w-16 h-16 rounded-full border-4 flex items-center justify-center overflow-hidden" style={{ borderColor: COLORS[playerIdx] }}><img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full bg-[#050810]" /></div>
+                                        <div className="w-16 h-16 rounded-full border-4 flex items-center justify-center overflow-hidden" style={{ borderColor: COLORS[playerIdx] }}><img src={String(p.avatar || "").startsWith("data:image") ? p.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full object-cover bg-[#050810]" /></div>
                                         <div><p className={`font-mono text-sm uppercase tracking-widest mb-1 ${i === 0 ? 'text-amber-400' : 'text-emerald-500'}`}>{medal}</p><p className="text-2xl text-white font-black">{p.name}</p></div>
                                     </div>
                                 );
@@ -1421,7 +1421,7 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                                             <div id={`invite-row-${user.id}`} key={user.id} className={`flex justify-between items-center p-3 bg-[#050810] rounded-xl border border-white/5 hover:border-emerald-500/30 transition-all group ${user.status === 'offline' ? 'opacity-50 grayscale' : ''}`}>
                                                 <div className="flex items-center gap-3">
                                                     <div className="relative">
-                                                        <img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} className="w-10 h-10 rounded-full border border-white/10" />
+                                                        <img src={String(user.avatar || "").startsWith("data:image") ? user.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} className="w-10 h-10 object-cover rounded-full border border-white/10" />
                                                         <div className={`absolute bottom-0 right-0 w-3 h-3 ${user.status === 'online' ? 'bg-emerald-500' : 'bg-gray-500'} border-2 border-[#050810] rounded-full`}></div>
                                                     </div>
                                                     <div>
@@ -1466,7 +1466,7 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                     <div className="space-y-3">
                         {gameState?.players?.map((p: any, i: number) => (
                             <div key={i} className={`flex items-center gap-3 p-3 rounded-xl transition-all border ${gameState?.turn === i && gameState?.state === 'playing' ? 'bg-white/10 border-white/20 scale-[1.02] shadow-[0_0_15px_rgba(255,255,255,0.1)]' : 'bg-[#050810] border-transparent opacity-70'}`}>
-                                <div className="w-12 h-12 rounded-full border-2 flex items-center justify-center shrink-0 overflow-hidden" style={{ borderColor: COLORS[i] }}><img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full bg-[#050810]" /></div>
+                                <div className="w-12 h-12 rounded-full border-2 flex items-center justify-center shrink-0 overflow-hidden" style={{ borderColor: COLORS[i] }}><img src={String(p.avatar || "").startsWith("data:image") ? p.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full object-cover bg-[#050810]" /></div>
                                 <div className="flex-1 overflow-hidden">
                                     <p className="text-white font-bold text-sm truncate">
                                         {p.name} {p.isBot && <span className="text-xs text-emerald-500 ml-1">(AI)</span>}
@@ -1496,7 +1496,7 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                             <div className="space-y-2">
                                 {sentInvites.map((u, i) => (
                                     <div key={i} className="flex items-center gap-3 p-2 rounded-xl bg-white/5 border border-white/5 opacity-60">
-                                        <div className="w-8 h-8 rounded-full bg-[#050810] flex items-center justify-center shrink-0 border border-white/10 overflow-hidden"><img src={`https://api.dicebear.com/7.x/bottts/svg?seed=${u.username}`} className="w-full h-full" /></div>
+                                        <div className="w-8 h-8 rounded-full bg-[#050810] flex items-center justify-center shrink-0 border border-white/10 overflow-hidden"><img src={String(u.avatar || "").startsWith("data:image") ? u.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${u.username}`} className="w-full h-full object-cover" /></div>
                                         <p className="text-white text-xs font-bold truncate flex-1">{u.username}</p>
                                         <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></div>
                                     </div>

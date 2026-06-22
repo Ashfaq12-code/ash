@@ -11,6 +11,46 @@ import dynamic from 'next/dynamic';
 const faceapi = typeof window !== "undefined" ? require('@vladmandic/face-api/dist/face-api.esm.js') : null;
 const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false });
 const NeuralGameWorld = dynamic(() => import('../components/NeuralGameWorld'), { ssr: false });
+const compressImage = (dataUrl: string, maxWidth = 150, maxHeight = 150, quality = 0.7): Promise<string> => {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve(dataUrl);
+      return;
+    }
+    const img = new Image();
+    img.src = dataUrl;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } else {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => {
+      resolve(dataUrl);
+    };
+  });
+};
 
 const SECRET_KEY = "NEOTALK_AES_256_KEY";
 
@@ -19,6 +59,8 @@ interface Message {
   senderName: string;
   senderId?: string;
   targetId?: string;
+  senderUsername?: string;
+  targetUsername?: string;
   text: string;
   timestamp: Date;
   isUser: boolean;
@@ -41,6 +83,9 @@ interface Message {
   };
   isLudoInvite?: boolean;
   ludoRoomId?: string;
+  replyToId?: string;
+  replyToSender?: string;
+  replyToText?: string;
   ludoPlayerSlots?: string[];
   status?: string;
 }
@@ -67,13 +112,27 @@ export default function App() {
       socketUrl = socketUrl.slice(0, -1);
     }
     
-    if (socketUrl) {
+    // Check if we are running in localhost/local development environment
+    const isLocalhost = typeof window !== "undefined" && (
+      window.location.hostname === "localhost" || 
+      window.location.hostname === "127.0.0.1" || 
+      window.location.hostname.startsWith("192.168.")
+    );
+
+    // If socketUrl is empty, or points to localtunnel (loca.lt) in production
+    // (since localtunnel's abuse interstitial fails in standard cross-origin browser requests),
+    // default to the reliable, active Railway backend.
+    if (!socketUrl || (socketUrl.includes("loca.lt") && !isLocalhost)) {
+      if (!isLocalhost) {
+        socketUrl = "https://virtuous-expression-production.up.railway.app";
+      } else {
+        socketUrl = "http://localhost:5000";
+      }
+    } else if (socketUrl) {
       // If it doesn't have http:// or https://, prepend https:// for production reliability
       if (!socketUrl.startsWith("http://") && !socketUrl.startsWith("https://")) {
         socketUrl = "https://" + socketUrl;
       }
-    } else {
-      socketUrl = `${window.location.protocol}//${window.location.hostname}:5000`;
     }
     setConnectedUrl(socketUrl);
     console.log("[SOCKET] Attempting connection to URL:", socketUrl);
@@ -823,12 +882,37 @@ function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Soc
 }
 
 function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSeed, about, setAbout, showLastSeen, setShowLastSeen, isGuest, setIsGuest, onLogOut }: { socket: Socket | null, username: string, setUsername: (name: string) => void, avatarSeed: string, setAvatarSeed: (seed: string) => void, about: string, setAbout: (about: string) => void, showLastSeen: boolean, setShowLastSeen: (show: boolean) => void, isGuest: boolean, setIsGuest: (g: boolean) => void, onLogOut: () => void }) {
-  const [activeTab, setActiveTab] = useState<'chat' | 'directory' | 'admin' | 'profile' | 'survival' | 'wallet' | 'shop' | 'discord'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'directory' | 'calls' | 'admin' | 'profile' | 'survival' | 'wallet' | 'shop' | 'discord'>('chat');
+  const [callLogs, setCallLogs] = useState<any[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null | 'LIST'>(null); // null = Global Chat
   const selectedChatIdRef = useRef(selectedChatId);
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
+
+  // Global avatar cache: username -> avatar data URL or seed string
+  // This persists across socket reconnects and is populated from update_users
+  const [avatarCache, setAvatarCache] = useState<Record<string, string>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const saved = localStorage.getItem('aura_avatar_cache');
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+
+  const updateAvatarCache = (updates: Record<string, string>) => {
+    setAvatarCache(prev => {
+      const merged = { ...prev, ...updates };
+      try { localStorage.setItem('aura_avatar_cache', JSON.stringify(merged)); } catch {}
+      return merged;
+    });
+  };
+
+  // Helper: get avatar src for any username
+  const getAvatarSrc = (uname: string, fallbackAvatar?: string): string => {
+    const av = avatarCache[uname] || fallbackAvatar || uname || 'default';
+    return String(av).startsWith('data:image') ? av : `https://api.dicebear.com/7.x/bottts/svg?seed=${av}`;
+  };
 
   const [notifications, setNotifications] = useState<any[]>([
     { id: 'welcome', title: 'System Active', text: 'Telemetry pipelines online. Welcome to Aura grid!', timestamp: new Date(), read: false, type: 'info' }
@@ -938,8 +1022,8 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
   const [typingStatus, setTypingStatus] = useState<string | null>(null);
   const [unreadMap, setUnreadMap] = useState<Record<string, boolean>>({});
   const [lastMessageMap, setLastMessageMap] = useState<Record<string, number>>({});
-  const [incomingCall, setIncomingCall] = useState<{ signal: any, from: string, callerName: string } | null>(null);
-  const [activeCall, setActiveCall] = useState<{ userId: string, username: string, isCaller: boolean, isAi?: boolean, initialSignal?: any } | null>(null);
+  const [incomingCall, setIncomingCall] = useState<{ signal: any, from: string, callerName: string, callerAvatar?: string, isVideo?: boolean } | null>(null);
+  const [activeCall, setActiveCall] = useState<{ userId: string, username: string, avatarSrc?: string, isCaller: boolean, isAi?: boolean, initialSignal?: any, isVideo?: boolean } | null>(null);
   const [incomingLudoInvites, setIncomingLudoInvites] = useState<any[]>([]);
   const [systemStats, setSystemStats] = useState({ totalMessages: 0, aiInterventions: 0, activeCalls: 0 });
   const [toast, setToast] = useState<{ id: string, name: string, text: string } | null>(null);
@@ -1046,7 +1130,17 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
       }
     });
 
-    socket.on("update_users", (users) => setOnlineUsers(users));
+    socket.on("update_users", (users: any[]) => {
+      setOnlineUsers(users);
+      // Populate avatar cache from users broadcast (keyed by username)
+      const updates: Record<string, string> = {};
+      users.forEach(u => {
+        if (u.username && u.avatar) {
+          updates[u.username] = u.avatar;
+        }
+      });
+      if (Object.keys(updates).length > 0) updateAvatarCache(updates);
+    });
     socket.on("update_stats", (stats) => setSystemStats(stats));
 
     socket.on("discord_qa_message_received", (data) => {
@@ -1099,8 +1193,15 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
     socket.on("typing_end", () => setTypingStatus(null));
 
     socket.on("receive_message", (msg) => {
-      if (msg.senderId && msg.senderId !== socket.id) {
-        setLastMessageMap((p: any) => ({ ...p, [msg.senderId]: Date.now(), [`text_${msg.senderId}`]: msg.text }));
+      const senderUsername = msg.senderUsername || msg.senderName;
+      const isFromOther = msg.senderId && msg.senderId !== socket.id;
+      if (isFromOther && senderUsername) {
+        // Key by senderUsername (stable) not senderId (volatile socket ID)
+        setLastMessageMap((p: any) => ({
+          ...p,
+          [senderUsername]: Date.now(),
+          [`text_${senderUsername}`]: msg.text
+        }));
 
         let decryptedText = msg.text;
         if (msg.isEncrypted) {
@@ -1110,13 +1211,18 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
           } catch (err) { decryptedText = "Encrypted Message"; }
         }
 
-        if (msg.senderId !== selectedChatIdRef.current && msg.id && !msg.id.startsWith("sys_")) {
+        // Check if message is for the currently open chat (by username)
+        const currentTarget = onlineUsers.find((u: any) => u.id === selectedChatIdRef.current);
+        const currentTargetUsername = currentTarget?.username || selectedChatIdRef.current;
+        const isCurrentChat = senderUsername === currentTargetUsername || msg.senderId === selectedChatIdRef.current;
+
+        if (!isCurrentChat && msg.id && !msg.id.startsWith("sys_")) {
           try {
             const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3");
             audio.play().catch(() => { });
           } catch (e) { }
           setToast({ id: msg.senderId, name: msg.senderName, text: decryptedText });
-          setTimeout(() => setToast(null), 3000); // 3 second popup duration
+          setTimeout(() => setToast(null), 3000);
         }
       }
     });
@@ -1127,6 +1233,12 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
     });
 
     socket.on("incoming_call", (data) => {
+      // Play ringtone immediately on event arrival
+      try {
+        const ring = new Audio("https://assets.mixkit.co/active_storage/sfx/2805/2805-preview.mp3");
+        ring.loop = false;
+        ring.play().catch(() => {});
+      } catch (e) {}
       setIncomingCall(data);
     });
 
@@ -1140,7 +1252,16 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
     socket.on("call_ended", () => {
       setActiveCall(null);
       setIncomingCall(null);
+      // Refresh call logs after a call ends
+      setTimeout(() => socket.emit("get_call_logs"), 800);
     });
+
+    socket.on("receive_call_logs", (logs: any[]) => {
+      setCallLogs(logs);
+    });
+
+    // Fetch initial call logs on connect
+    socket.emit("get_call_logs");
 
     socket.on("agent_joined_game", (data) => {
       setPendingAgents(p => [...p, { id: data.agentId || 'agent', username: data.agentName }]);
@@ -1188,6 +1309,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
       socket.off("incoming_call");
       socket.off("ludo_invite_received");
       socket.off("call_ended");
+      socket.off("receive_call_logs");
       socket.off("agent_joined_game");
       socket.off("force_open_ludo");
       socket.off("wallet_update");
@@ -1289,13 +1411,31 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
     };
   }, [socket, isSimulationEnabled]);
 
-  const startCall = (user: any) => {
-    setActiveCall({ userId: user.id, username: user.username, isCaller: true, isAi: user.id?.startsWith("agent_") });
+  const startCall = (user: any, isVideo: boolean = true) => {
+    const currentOnlineUser = onlineUsers.find((u: any) => u.username === user.username);
+    const actualTargetId = currentOnlineUser ? currentOnlineUser.id : user.id;
+    const avatarSrc = getAvatarSrc(user.username, user.avatar);
+    setActiveCall({ 
+      userId: actualTargetId, 
+      username: user.username, 
+      avatarSrc,
+      isCaller: true, 
+      isAi: actualTargetId?.startsWith("agent_"),
+      isVideo 
+    });
   };
 
   const acceptCall = () => {
     if (!incomingCall) return;
-    setActiveCall({ userId: incomingCall.from, username: incomingCall.callerName, isCaller: false, initialSignal: incomingCall.signal });
+    const avatarSrc = getAvatarSrc(incomingCall.callerName, incomingCall.callerAvatar);
+    setActiveCall({ 
+      userId: incomingCall.from, 
+      username: incomingCall.callerName, 
+      avatarSrc,
+      isCaller: false, 
+      initialSignal: incomingCall.signal,
+      isVideo: incomingCall.isVideo 
+    });
     setIncomingCall(null);
   };
 
@@ -1366,6 +1506,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
           </button>
           <button onClick={() => setActiveTab('chat')} className={`w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'chat' ? 'bg-emerald-500 text-black shadow-[0_0_20px_rgba(16,185,129,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Neural Chat"><MessageSquare className="w-5 h-5 md:w-6 md:h-6" /></button>
           <button onClick={() => setActiveTab('directory')} className={`w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'directory' ? 'bg-amber-500 text-black shadow-[0_0_20px_rgba(245,158,11,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Agents Directory"><Users className="w-5 h-5 md:w-6 md:h-6" /></button>
+          <button onClick={() => { setActiveTab('calls'); socket?.emit('get_call_logs'); }} className={`w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all relative ${activeTab === 'calls' ? 'bg-green-500 text-black shadow-[0_0_20px_rgba(34,197,94,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Call Logs"><PhoneCall className="w-5 h-5 md:w-6 md:h-6" /></button>
           <button onClick={() => setActiveTab('survival')} className={`w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'survival' ? 'bg-purple-500 text-black shadow-[0_0_20px_rgba(168,85,247,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Survival Protocol"><Gamepad2 className="w-5 h-5 md:w-6 md:h-6" /></button>
           <button onClick={() => setActiveTab('wallet')} className={`w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'wallet' ? 'bg-amber-400 text-black shadow-[0_0_20px_rgba(251,191,36,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Neural Wallet"><Wallet className="w-5 h-5 md:w-6 md:h-6" /></button>
           <button onClick={() => setActiveTab('shop')} className={`w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all ${activeTab === 'shop' ? 'bg-emerald-400 text-black shadow-[0_0_20px_rgba(52,211,153,0.4)]' : 'text-gray-500 hover:text-white hover:bg-white/5'}`} title="Neural Shop"><Swords className="w-5 h-5 md:w-6 md:h-6" /></button>
@@ -1417,7 +1558,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
                             <div key={user.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 transition-all">
                               <div className="flex items-center gap-2">
                                 <div className="w-8 h-8 rounded-full border border-white/10 overflow-hidden bg-[#050810]">
-                                  <img src={String(user.username || "").startsWith("data:image") ? user.username : `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} className="w-full h-full" />
+                                  <img src={String(user.avatar || "").startsWith("data:image") ? user.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${user.avatar || user.username}`} className="w-full h-full" />
                                 </div>
                                 <div>
                                   <h4 className="text-white text-xs font-bold font-mono">{displayName}</h4>
@@ -1504,22 +1645,29 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
                 const isArchived = archivedChats.includes(u.id);
                 return showArchivedOnly ? isArchived : !isArchived;
               })
-              .sort((a, b) => (lastMessageMap[b.id] || 0) - (lastMessageMap[a.id] || 0))
-              .map(user => (
-                <ChatListItem
-                  key={user.id}
-                  active={selectedChatId === user.id}
-                  onClick={() => {
-                    setSelectedChatId(user.id);
-                    setUnreadMap(p => ({ ...p, [user.id]: false }));
-                  }}
-                  name={nicknames[user.id] || user.username}
-                  lastMsg={lastMessageMap[`text_${user.id}`] || (user.status === "online" ? "Active link..." : "Disconnected")}
-                  time={user.status.toUpperCase()}
-                  status={user.status}
-                  hasUnread={unreadMap[user.id]}
-                />
-              ))}
+              // Sort by username-keyed lastMessageMap for stability across reconnects
+              .sort((a, b) => (lastMessageMap[b.username] || lastMessageMap[b.id] || 0) - (lastMessageMap[a.username] || lastMessageMap[a.id] || 0))
+              .map(user => {
+                // Use avatarCache (keyed by username) for reliable avatar lookup
+                const cachedAvatar = avatarCache[user.username] || user.avatar;
+                return (
+                  <ChatListItem
+                    key={user.id}
+                    active={selectedChatId === user.id}
+                    onClick={() => {
+                      setSelectedChatId(user.id);
+                      // Clear unread by both id and username
+                      setUnreadMap(p => ({ ...p, [user.id]: false, [user.username]: false }));
+                    }}
+                    name={nicknames[user.id] || user.username}
+                    avatar={cachedAvatar}
+                    lastMsg={lastMessageMap[`text_${user.username}`] || lastMessageMap[`text_${user.id}`] || (user.status === "online" ? "Active link..." : "Disconnected")}
+                    time={user.status.toUpperCase()}
+                    status={user.status}
+                    hasUnread={unreadMap[user.id] || unreadMap[user.username]}
+                  />
+                );
+              })}
           </div>
         </div>
       )}
@@ -1551,6 +1699,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
                 onDeployToGrid={(roomId?: string, players?: string[]) => { setPendingLudoInvite(false); if (roomId) setSelectedLudoRoom(roomId); if (players?.length) setPendingAgents(players); setActiveTab('survival'); }}
                 isVirtualDm={typeof selectedChatId === 'string' && selectedChatId.startsWith('virtual_')}
                 virtualDmOpening={virtualDmUsers.find((u: any) => u.id === selectedChatId)?.openingMessage}
+                avatarCache={avatarCache}
                 onCollectPayment={(amount: number) => {
                   setWalletInfo((prev: any) => ({
                     ...prev,
@@ -1563,6 +1712,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
           </div>
         )}
         {activeTab === 'directory' && <OnlineUsersDirectory onlineUsers={onlineUsers} onCall={startCall} onChat={(id) => { setSelectedChatId(id); setActiveTab('chat'); }} />}
+        {activeTab === 'calls' && <CallLogsPage callLogs={callLogs} onCall={startCall} username={username} onlineUsers={onlineUsers} />}
         {activeTab === 'admin' && <AdminPlaceholder stats={systemStats} />}
         {activeTab === 'wallet' && <WalletPage walletInfo={walletInfo} username={username} />}
         {activeTab === 'profile' && (
@@ -1681,7 +1831,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
               <div className="flex items-center gap-4 mb-4">
                 <div className="relative">
                   <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/30 overflow-hidden">
-                    <img src={String(invite.fromName || "").startsWith("data:image") ? invite.fromName : `https://api.dicebear.com/7.x/bottts/svg?seed=${invite.fromName}`} className="w-full h-full" />
+                    <img src={String(invite.fromAvatar || "").startsWith("data:image") ? invite.fromAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${invite.fromAvatar || invite.fromName}`} className="w-full h-full object-cover" />
                   </div>
                   <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full animate-ping"></div>
                 </div>
@@ -1724,7 +1874,11 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
               className="absolute top-0 right-10 bg-[#0f1b29] border border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] rounded-xl p-4 z-50 flex items-center gap-4 cursor-pointer hover:bg-[#162638] transition-all"
             >
               <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
-                <img src={String(toast.name || "").startsWith("data:image") ? toast.name : `https://api.dicebear.com/7.x/bottts/svg?seed=${toast.name}`} className="w-8 h-8 rounded-full" />
+                {(() => {
+                  // Use avatarCache (by username) for reliable toast avatar
+                  const toastAvatarSrc = getAvatarSrc(toast.name);
+                  return <img src={toastAvatarSrc} className="w-8 h-8 rounded-full" />;
+                })()}
               </div>
               <div className="flex-1 overflow-hidden">
                 <h4 className="text-emerald-400 font-bold text-sm truncate">{toast.name}</h4>
@@ -1737,17 +1891,69 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
         {/* Incoming Call Overlay */}
         <AnimatePresence>
           {incomingCall && !activeCall && (
-            <motion.div initial={{ y: -100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -100, opacity: 0 }} className="absolute top-10 left-1/2 -translate-x-1/2 bg-[#0c1222] border border-emerald-500 shadow-[0_0_50px_rgba(16,185,129,0.3)] rounded-2xl p-6 z-50 flex items-center gap-6">
-              <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center animate-pulse">
-                <img src={String(incomingCall.callerName || "").startsWith("data:image") ? incomingCall.callerName : `https://api.dicebear.com/7.x/bottts/svg?seed=${incomingCall.callerName}`} className="w-12 h-12 rounded-full" />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 0 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 0 }}
+              className="fixed inset-0 bg-[#0b141a] z-[9999] flex flex-col justify-between py-20 px-6 items-center text-white"
+            >
+              <audio autoPlay loop src="https://assets.mixkit.co/active_storage/sfx/2805/2805-preview.mp3" />
+              {/* Top Section */}
+              <div className="flex flex-col items-center gap-2 mt-4 select-none">
+                <div className="flex items-center gap-1.5 text-gray-400 font-mono text-[10px] uppercase tracking-[0.2em] bg-white/5 px-3 py-1 rounded-full border border-white/5">
+                  <Lock className="w-3 h-3 text-emerald-400 animate-pulse" /> End-to-End Encrypted
+                </div>
               </div>
-              <div>
-                <h3 className="text-xl font-bold text-white">Incoming Secure Call</h3>
-                <p className="text-emerald-500 font-mono text-sm">{incomingCall.callerName} is requesting a video link...</p>
+
+              {/* Middle Section: Avatar & Info */}
+              <div className="flex flex-col items-center text-center select-none">
+                <div className="relative mb-6">
+                  {/* Outer pulsing rings */}
+                  <div className="absolute inset-0 rounded-full bg-emerald-500/10 animate-ping" style={{ animationDuration: '3s' }} />
+                  <div className="absolute inset-[-12px] rounded-full border-2 border-emerald-500/30 animate-pulse" />
+                  
+                  <div className="w-36 h-36 rounded-full border-4 border-emerald-500/80 overflow-hidden bg-[#0c1222] shadow-[0_0_50px_rgba(16,185,129,0.3)] relative z-10 flex items-center justify-center">
+                    {(() => {
+                      const callerAvatarSrc = getAvatarSrc(incomingCall.callerName, incomingCall.callerAvatar);
+                      return <img src={callerAvatarSrc} alt="Caller Avatar" className="w-full h-full object-cover" />;
+                    })()}
+                  </div>
+                </div>
+
+                <h2 className="text-3xl font-black tracking-wide text-white uppercase font-sans mb-2 drop-shadow-md">
+                  {incomingCall.callerName}
+                </h2>
+                <p className="text-emerald-400 font-mono text-xs uppercase tracking-widest animate-pulse">
+                  Incoming {incomingCall.isVideo ? 'Video' : 'Voice'} Call...
+                </p>
               </div>
-              <div className="flex gap-3 ml-4">
-                <button onClick={declineCall} className="w-12 h-12 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500 hover:text-white transition-all flex items-center justify-center"><X className="w-6 h-6" /></button>
-                <button onClick={acceptCall} className="w-12 h-12 rounded-full bg-emerald-500 text-[#050810] hover:bg-emerald-400 transition-all flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.5)]"><PhoneCall className="w-6 h-6" /></button>
+
+              {/* Bottom Section: Answer / Decline Buttons */}
+              <div className="flex items-center gap-12 mb-6">
+                {/* Decline Button */}
+                <div className="flex flex-col items-center gap-2">
+                  <button
+                    onClick={declineCall}
+                    className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 transition-all duration-300 flex items-center justify-center shadow-[0_0_35px_rgba(239,68,68,0.4)] hover:scale-105 active:scale-95 animate-pulse"
+                    title="Decline Call"
+                  >
+                    <Phone className="w-7 h-7 rotate-[135deg] text-white" />
+                  </button>
+                  <span className="text-[10px] font-mono uppercase tracking-widest text-gray-500 font-bold mt-1">Decline</span>
+                </div>
+
+                {/* Answer Button */}
+                <div className="flex flex-col items-center gap-2">
+                  <button
+                    onClick={acceptCall}
+                    className="w-16 h-16 rounded-full bg-emerald-500 hover:bg-emerald-400 transition-all duration-300 flex items-center justify-center shadow-[0_0_35px_rgba(16,185,129,0.4)] hover:scale-105 active:scale-95 animate-bounce"
+                    style={{ animationDuration: '2s' }}
+                    title="Answer Call"
+                  >
+                    <PhoneCall className="w-7 h-7 text-[#050810]" />
+                  </button>
+                  <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-500 font-bold mt-1">Answer</span>
+                </div>
               </div>
             </motion.div>
           )}
@@ -1773,7 +1979,7 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
   );
 }
 
-function OnlineUsersDirectory({ onlineUsers, onCall, onChat }: { onlineUsers: any[], onCall: (u: any) => void, onChat: (id: string) => void }) {
+function OnlineUsersDirectory({ onlineUsers, onCall, onChat }: { onlineUsers: any[], onCall: (u: any, isVideo: boolean) => void, onChat: (id: string) => void }) {
   const [activeCategory, setActiveCategory] = useState('All');
   const [discoverSearch, setDiscoverSearch] = useState('');
 
@@ -1946,7 +2152,11 @@ function OnlineUsersDirectory({ onlineUsers, onCall, onChat }: { onlineUsers: an
                   {/* Avatar */}
                   <div className="flex flex-col items-center mb-4">
                     <div className={`relative w-16 h-16 rounded-2xl border-2 ${isOnline ? 'border-cyan-500/40 shadow-[0_0_15px_rgba(6,182,212,0.2)]' : 'border-white/10'} bg-[#0c1525] overflow-hidden`}>
-                      <img src={String(user.username || "").startsWith("data:image") ? user.username : `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`} alt="avatar" className="w-full h-full" />
+                      {(() => {
+                        const lobbyAvatar = user.avatar || user.username;
+                        const lobbyAvatarSrc = String(lobbyAvatar || "").startsWith("data:image") ? lobbyAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${lobbyAvatar || user.username}`;
+                        return <img src={lobbyAvatarSrc} alt="avatar" className="w-full h-full" />;
+                      })()}
                     </div>
                     <h3 className="text-white font-black text-[15px] font-mono mt-3 truncate max-w-full">{user.username}</h3>
                     <span className={`mt-1 text-[10px] font-bold font-mono px-2 py-0.5 rounded-full border ${roleStyle}`}>
@@ -1969,11 +2179,18 @@ function OnlineUsersDirectory({ onlineUsers, onCall, onChat }: { onlineUsers: an
                       💬 Message
                     </button>
                     <button
-                      onClick={() => onCall(user)}
+                      onClick={() => onCall(user, true)}
                       className="w-9 h-9 flex items-center justify-center bg-white/5 hover:bg-emerald-500 text-gray-400 hover:text-white border border-white/10 hover:border-transparent rounded-xl transition-all"
                       title="Video Call"
                     >
                       <Video className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => onCall(user, false)}
+                      className="w-9 h-9 flex items-center justify-center bg-white/5 hover:bg-cyan-500 text-gray-400 hover:text-white border border-white/10 hover:border-transparent rounded-xl transition-all"
+                      title="Audio Call"
+                    >
+                      <Phone className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -1986,12 +2203,13 @@ function OnlineUsersDirectory({ onlineUsers, onCall, onChat }: { onlineUsers: an
   );
 }
 
-function ChatListItem({ name, lastMsg, time, active, onClick, isGlobal, status, hasUnread }: any) {
+function ChatListItem({ name, lastMsg, time, active, onClick, isGlobal, status, hasUnread, avatar }: any) {
+  const avatarUrl = String(avatar || "").startsWith("data:image") ? avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${avatar || name}`;
   return (
     <button onClick={onClick} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${active ? 'bg-emerald-500/10 border border-emerald-500/20' : 'hover:bg-white/5 border border-transparent'} ${status === 'offline' ? 'opacity-50' : ''} ${hasUnread ? 'bg-white/5' : ''}`}>
       <div className="relative shrink-0">
         <div className={`w-12 h-12 rounded-full border border-white/10 p-[2px] ${isGlobal ? 'bg-emerald-500/20' : 'bg-[#050810]'}`}>
-          <img src={String(name || "").startsWith("data:image") ? name : `https://api.dicebear.com/7.x/bottts/svg?seed=${name}`} className="w-full h-full rounded-full" />
+          <img src={avatarUrl} className="w-full h-full rounded-full" />
         </div>
         {!isGlobal && <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#0b121f] ${status === 'online' ? 'bg-emerald-500' : 'bg-gray-600'}`}></div>}
         {hasUnread && !active && <div className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#050810] animate-pulse"></div>}
@@ -2105,7 +2323,11 @@ function ProfilePage({ username, setUsername, avatarSeed, setAvatarSeed, about, 
               const file = e.target.files?.[0];
               if (file) {
                 const reader = new FileReader();
-                reader.onload = (ev) => setNewSeed(ev.target?.result as string);
+                reader.onload = async (ev) => {
+                  const rawData = ev.target?.result as string;
+                  const compressed = await compressImage(rawData, 128, 128, 0.7);
+                  setNewSeed(compressed);
+                };
                 reader.readAsDataURL(file);
               }
             }}
@@ -2264,51 +2486,111 @@ function ProfilePage({ username, setUsername, avatarSeed, setAvatarSeed, about, 
 function AiVoiceCallInterface({ activeCall, onEnd, socket }: any) {
   const [status, setStatus] = useState("Connecting to Neural Node...");
   const [transcript, setTranscript] = useState("");
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const isSpeakingRef = useRef(false);
+  const [isSpeakingUI, setIsSpeakingUI] = useState(false);
   const recognitionRef = useRef<any>(null);
   const aiMessageRef = useRef("");
+  const listeningRef = useRef(false);
+
+  // Helper: wait for voices to be available then speak
+  const speakWithVoice = (text: string, onDone?: () => void) => {
+    const doSpeak = () => {
+      window.speechSynthesis.cancel();
+      const speech = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices();
+      const premiumVoice =
+        voices.find(v => v.name.includes("Google") && v.lang.startsWith("en")) ||
+        voices.find(v => v.lang.startsWith("en-US")) ||
+        voices.find(v => v.lang.startsWith("en")) ||
+        voices[0];
+      if (premiumVoice) speech.voice = premiumVoice;
+      speech.rate = 1.0;
+      speech.pitch = 1.1;
+      speech.volume = 1.0;
+      speech.onend = () => { onDone && onDone(); };
+      speech.onerror = () => { onDone && onDone(); };
+      window.speechSynthesis.speak(speech);
+    };
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      doSpeak();
+    } else {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        doSpeak();
+      };
+      // Fallback: if onvoiceschanged never fires (non-Chrome), try after short delay
+      setTimeout(() => {
+        if (!window.speechSynthesis.speaking) doSpeak();
+      }, 500);
+    }
+  };
+
+  const startListening = () => {
+    if (isSpeakingRef.current || listeningRef.current) return;
+    try {
+      recognitionRef.current?.start();
+      listeningRef.current = true;
+    } catch (e) { }
+  };
 
   useEffect(() => {
-    let t1 = setTimeout(() => {
-      setStatus("Connected. Listening...");
-      try {
-        const speech = new SpeechSynthesisUtterance(`Secure neural voice channel established with ${activeCall.username}. Speak now.`);
-        speech.rate = 0.9;
-        speech.pitch = 0.8;
-        window.speechSynthesis.speak(speech);
-      } catch (e) { }
-      startListening();
-    }, 1500);
-
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = false;
-      recognitionRef.current.lang = 'en-US';
+      const rec = new SpeechRecognition();
+      rec.continuous = false;
+      rec.interimResults = false;
+      rec.lang = 'en-US';
 
-      recognitionRef.current.onresult = (event: any) => {
+      rec.onstart = () => { listeningRef.current = true; };
+
+      rec.onresult = (event: any) => {
+        listeningRef.current = false;
         const text = event.results[0][0].transcript;
         setTranscript(text);
         setStatus("AI is processing...");
-        socket?.emit("send_message", { targetId: activeCall.userId, text: text, isEncrypted: false });
+        socket?.emit("send_message", { targetId: activeCall.userId, text, isEncrypted: false });
       };
 
-      recognitionRef.current.onend = () => {
-        if (!window.speechSynthesis.speaking && !isSpeaking) {
-          try { recognitionRef.current?.start(); } catch (e) { }
+      rec.onend = () => {
+        listeningRef.current = false;
+        // Restart listening if AI is not currently speaking
+        if (!isSpeakingRef.current) {
+          setTimeout(() => startListening(), 300);
         }
       };
+
+      rec.onerror = (e: any) => {
+        listeningRef.current = false;
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          setStatus("Mic error – retrying...");
+        }
+        if (!isSpeakingRef.current) {
+          setTimeout(() => startListening(), 800);
+        }
+      };
+
+      recognitionRef.current = rec;
     } else {
       setStatus("Speech Recognition not supported in this browser.");
     }
+
+    // Initial greeting + start listening
+    const t1 = setTimeout(() => {
+      setStatus("Connected. Listening...");
+      speakWithVoice(`Secure neural voice channel established with ${activeCall.username}. Speak now.`, () => {
+        startListening();
+      });
+    }, 1000);
 
     const handleStreamStart = (msg: any) => {
       if (msg.senderId === activeCall.userId) {
         aiMessageRef.current = "";
         setStatus("AI is thinking...");
-        setIsSpeaking(true);
-        try { recognitionRef.current?.stop(); } catch (e) { }
+        isSpeakingRef.current = true;
+        setIsSpeakingUI(true);
+        listeningRef.current = false;
+        try { recognitionRef.current?.abort(); } catch (e) { }
       }
     };
 
@@ -2319,43 +2601,29 @@ function AiVoiceCallInterface({ activeCall, onEnd, socket }: any) {
     };
 
     const handleStreamEnd = (msg: any) => {
-      // Speak the complete message
-      if (aiMessageRef.current) {
+      const fullText = aiMessageRef.current || (msg && msg.text) || "";
+      if (fullText) {
         setStatus("AI is speaking...");
-        const speech = new SpeechSynthesisUtterance(aiMessageRef.current);
-
-        // Find a more human-like voice (English - Google/Premium if available)
-        const voices = window.speechSynthesis.getVoices();
-        const premiumVoice = voices.find(v => v.name.includes("Google") && v.lang.includes("en")) ||
-          voices.find(v => v.lang.includes("en-US")) ||
-          voices[0];
-
-        if (premiumVoice) speech.voice = premiumVoice;
-
-        speech.rate = 1.0;  // Slightly faster for natural flow
-        speech.pitch = 1.1; // Slightly higher for clarity
-        speech.volume = 1.0;
-
-        speech.onend = () => {
-          setIsSpeaking(false);
+        speakWithVoice(fullText, () => {
+          isSpeakingRef.current = false;
+          setIsSpeakingUI(false);
           setStatus("Listening...");
-          startListening();
-        };
-        window.speechSynthesis.speak(speech);
+          setTimeout(() => startListening(), 300);
+        });
       } else {
-        setIsSpeaking(false);
+        isSpeakingRef.current = false;
+        setIsSpeakingUI(false);
         setStatus("Listening...");
-        startListening();
+        setTimeout(() => startListening(), 300);
       }
     };
 
-    // Cleverbot fallback fallback
     const handleReceiveMsg = (msg: any) => {
       if (msg.senderId === activeCall.userId && !msg.isStreaming) {
-        aiMessageRef.current = msg.text;
+        aiMessageRef.current = msg.text || "";
         handleStreamEnd(msg);
       }
-    }
+    };
 
     socket?.on("stream_start", handleStreamStart);
     socket?.on("stream_chunk", handleStreamChunk);
@@ -2365,24 +2633,24 @@ function AiVoiceCallInterface({ activeCall, onEnd, socket }: any) {
     return () => {
       clearTimeout(t1);
       window.speechSynthesis.cancel();
+      isSpeakingRef.current = false;
+      listeningRef.current = false;
       if (recognitionRef.current) {
         recognitionRef.current.onend = null;
-        try { recognitionRef.current.stop(); } catch (e) { }
+        recognitionRef.current.onerror = null;
+        try { recognitionRef.current.abort(); } catch (e) { }
       }
       socket?.off("stream_start", handleStreamStart);
       socket?.off("stream_chunk", handleStreamChunk);
       socket?.off("stream_end", handleStreamEnd);
       socket?.off("receive_message", handleReceiveMsg);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const startListening = () => {
-    try { recognitionRef.current?.start(); } catch (e) { }
-  };
 
   return (
     <div className="absolute inset-0 bg-[#050810] z-50 flex flex-col items-center justify-center">
-      <div className={`text-emerald-500 transition-all ${isSpeaking ? 'scale-125 animate-pulse' : 'scale-100'} mb-8`}>
+      <div className={`text-emerald-500 transition-all ${isSpeakingUI ? 'scale-125 animate-pulse' : 'scale-100'} mb-8`}>
         <svg width="200" height="100" viewBox="0 0 200 100">
           <path d="M10,50 Q40,10 70,50 T130,50 T190,50" fill="none" stroke="currentColor" strokeWidth="4" />
           <path d="M10,50 Q40,90 70,50 T130,50 T190,50" fill="none" stroke="currentColor" strokeWidth="4" opacity="0.5" />
@@ -2396,7 +2664,12 @@ function AiVoiceCallInterface({ activeCall, onEnd, socket }: any) {
   )
 }
 
-function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, typingStatus, setUnreadMap, setLastMessageMap, selectedChatId, onlineUsers, onCall, onBack, nicknames, onNicknameChange, archivedChats, toggleArchiveChat, deleteChat, isVirtualDm, onCollectPayment, virtualDmOpening, autoStartLudoLobby, onDeployToGrid }: any) {
+function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, typingStatus, setUnreadMap, setLastMessageMap, selectedChatId, onlineUsers, onCall, onBack, nicknames, onNicknameChange, archivedChats, toggleArchiveChat, deleteChat, isVirtualDm, onCollectPayment, virtualDmOpening, autoStartLudoLobby, onDeployToGrid, avatarCache }: any) {
+  // Helper: resolve avatar src using cache (keyed by username) with fallback
+  const getAvatarSrcLocal = (uname: string, fallback?: string): string => {
+    const av = (avatarCache && avatarCache[uname]) || fallback || uname || 'default';
+    return String(av).startsWith('data:image') ? av : `https://api.dicebear.com/7.x/bottts/svg?seed=${av}`;
+  };
   const [paymentDone, setPaymentDone] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState<number | null>(null);
   const [dmPhase, setDmPhase] = useState<'question' | 'waiting' | 'confirmed' | 'paid'>('question');
@@ -2454,6 +2727,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
   const [input, setInput] = useState("");
   const [showEmoji, setShowEmoji] = useState(false);
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<any | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wallpaperFileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2471,7 +2745,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const keySuffix = `${username}_${targetId || 'global'}`;
+      const keySuffix = `${username}_${targetName || targetId || 'global'}`;
 
       const themeVal = localStorage.getItem(`chat_theme_${username}`);
       setChatTheme(themeVal || "emerald");
@@ -2488,7 +2762,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
       const savedContrast = localStorage.getItem(`chat_wallpaper_contrast_${keySuffix}`);
       setWallpaperContrast(savedContrast ? parseInt(savedContrast) : 100);
     }
-  }, [username, targetId]);
+  }, [username, targetId, targetName]);
 
   const handleWallpaperUpload = (e: any) => {
     const file = e.target.files[0];
@@ -2498,7 +2772,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
         const result = ev.target?.result as string;
         if (result) {
           setChatWallpaper(result);
-          localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, result);
+          localStorage.setItem(`chat_wallpaper_${username}_${targetName || targetId || 'global'}`, result);
         }
       };
       reader.readAsDataURL(file);
@@ -2604,8 +2878,19 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
 
   // Filter messages based on the active conversation
   const activeMessages = messages.filter(msg => {
-    if (!targetId) return !msg.targetId; // Global chat messages have no targetId
-    return (msg.senderId === targetId) || (msg.targetId === targetId);
+    if (!targetName && !targetId) {
+      // Global chat messages have no targetId/targetUsername
+      return !msg.targetId && !msg.targetUsername;
+    }
+    // For agents (bots)
+    if (targetId && targetId.startsWith("agent_")) {
+      return msg.senderId === targetId || msg.targetId === targetId || msg.senderUsername === targetId || msg.targetUsername === targetId;
+    }
+    // For normal users, match by username
+    const currentTargetName = targetName || (targetId ? onlineUsers.find((u: any) => u.id === targetId)?.username : null);
+    if (!currentTargetName) return false;
+    return (msg.senderUsername === currentTargetName && msg.targetUsername === username) ||
+           (msg.senderUsername === username && msg.targetUsername === currentTargetName);
   });
 
   useEffect(() => {
@@ -2646,11 +2931,22 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
         }
       }
 
-      // Handle Unread and Sorting logic
-      if (msg.senderId && msg.senderId !== socket.id) {
-        setLastMessageMap((p: any) => ({ ...p, [msg.senderId]: Date.now() }));
-        if (msg.senderId !== targetId) {
-          setUnreadMap((p: any) => ({ ...p, [msg.senderId]: true }));
+      // Handle Unread and Sorting logic - use senderUsername (stable) as key
+      const senderUname = msg.senderUsername || msg.senderName;
+      if (msg.senderId && msg.senderId !== socket.id && senderUname) {
+        // Key by username for stability across reconnects
+        setLastMessageMap((p: any) => ({
+          ...p,
+          [senderUname]: Date.now(),
+          [`text_${senderUname}`]: decryptedText
+        }));
+        // Determine if this sender is the currently open chat
+        const targetUserObj = onlineUsers.find((u: any) => u.id === targetId);
+        const targetUname = targetUserObj?.username || targetId;
+        const isCurrentSender = senderUname === targetUname || msg.senderId === targetId;
+        if (!isCurrentSender) {
+          // Key unread by both id and username for maximum compatibility
+          setUnreadMap((p: any) => ({ ...p, [msg.senderId]: true, [senderUname]: true }));
         }
       }
 
@@ -2667,11 +2963,14 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
     });
 
     socket.on("stream_start", (data: any) => {
-      // Also update sorting/unread for streaming agents
-      if (data.senderId) {
-        setLastMessageMap((p: any) => ({ ...p, [data.senderId]: Date.now() }));
-        if (data.senderId !== targetId) {
-          setUnreadMap((p: any) => ({ ...p, [data.senderId]: true }));
+      // Also update sorting/unread for streaming agents - use senderUsername as key
+      const senderUname = data.senderName || data.senderId;
+      if (data.senderId && senderUname) {
+        setLastMessageMap((p: any) => ({ ...p, [senderUname]: Date.now() }));
+        const targetUserObj = onlineUsers.find((u: any) => u.id === targetId);
+        const targetUname = targetUserObj?.username || targetId;
+        if (senderUname !== targetUname && data.senderId !== targetId) {
+          setUnreadMap((p: any) => ({ ...p, [data.senderId]: true, [senderUname]: true }));
         }
       }
 
@@ -2772,13 +3071,18 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
       const userMsg = {
         id: `vm_user_${Date.now()}`,
         sender: username,
+        senderName: username,
         text: input,
         timestamp: new Date(),
         isEncrypted: false,
+        replyToId: replyingTo ? replyingTo.id : null,
+        replyToSender: replyingTo ? replyingTo.senderName || replyingTo.sender : null,
+        replyToText: replyingTo ? replyingTo.text : null,
       };
       setMessages(prev => [...prev, userMsg as any]);
       setInput('');
       setShowEmoji(false);
+      setReplyingTo(null);
 
       // After first user reply, trigger the satisfied confirmation flow
       if (dmPhase === 'question') {
@@ -2810,9 +3114,20 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
 
     if (!socket) return;
     const encryptedText = CryptoJS.AES.encrypt(input, SECRET_KEY).toString();
-    socket.emit("send_message", { text: encryptedText, decryptedTextForAi: input, targetId: targetId });
+    const payload: any = {
+      text: encryptedText,
+      decryptedTextForAi: input,
+      targetId: targetId
+    };
+    if (replyingTo) {
+      payload.replyToId = replyingTo.id;
+      payload.replyToSender = replyingTo.senderName || replyingTo.sender;
+      payload.replyToText = replyingTo.text;
+    }
+    socket.emit("send_message", payload);
     setInput("");
     setShowEmoji(false);
+    setReplyingTo(null);
   };
 
   const handleMediaUpload = (e: any) => {
@@ -2822,8 +3137,12 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
       const isImage = file.type.startsWith('image/');
       if (!isImage && !isVideo) return;
       const reader = new FileReader();
-      reader.onload = (ev) => {
-        socket.emit("send_message", { text: ev.target?.result, targetId: targetId, isImage: isImage, isVideo: isVideo, isEncrypted: false });
+      reader.onload = async (ev) => {
+        let result = ev.target?.result as string;
+        if (isImage) {
+          result = await compressImage(result, 600, 600, 0.6);
+        }
+        socket.emit("send_message", { text: result, targetId: targetId, isImage: isImage, isVideo: isVideo, isEncrypted: false });
       };
       reader.readAsDataURL(file);
     }
@@ -2841,7 +3160,11 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
           )}
           <div className="relative">
             <div className={`w-12 h-12 rounded-full flex items-center justify-center border ${THEMES[chatTheme].border} overflow-hidden ${!targetId ? 'bg-emerald-500/20' : 'bg-[#050810]'} group-hover:scale-105 transition-transform duration-300`}>
-              <img src={String(targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName || "").startsWith("data:image") ? targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName : `https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? (onlineUsers.find((u: any) => u.id === targetId)?.avatar || targetName) : targetName}`} className="w-10 h-10" />
+              {(() => {
+                // Use avatarCache (keyed by username) for reliable lookup even when user reconnects
+                const activeAvatarSrc = getAvatarSrcLocal(targetName, onlineUsers.find((u: any) => u.id === targetId || u.username === targetName)?.avatar);
+                return <img src={activeAvatarSrc} className="w-10 h-10 object-cover rounded-full" />;
+              })()}
             </div>
             {!targetId && <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#090d16] animate-pulse ${chatTheme === 'emerald' ? 'bg-emerald-500' : chatTheme === 'purple' ? 'bg-purple-500' : chatTheme === 'cyan' ? 'bg-cyan-500' : chatTheme === 'amber' ? 'bg-amber-500' : 'bg-rose-500'}`}></div>}
           </div>
@@ -2882,8 +3205,8 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
         </div>
         <div className="flex gap-4 relative">
           <button onClick={() => { if (targetId) socket.emit("invite_game", { targetId, targetName }); }} className={`w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 ${THEMES[chatTheme].hoverText} transition-all`} title="Invite to Neural Ludo"><Gamepad2 className="w-5 h-5" /></button>
-          <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId); if (u) onCall(u); }} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 hover:text-cyan-400 transition-all"><Video className="w-5 h-5" /></button>
-          <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId); if (u) onCall(u); }} className={`w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 ${THEMES[chatTheme].hoverText} transition-all`}><Phone className="w-5 h-5" /></button>
+          <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId || x.username === targetName) || { id: targetId, username: targetName }; onCall(u, true); }} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 hover:text-cyan-400 transition-all" title="Video Call"><Video className="w-5 h-5" /></button>
+          <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId || x.username === targetName) || { id: targetId, username: targetName }; onCall(u, false); }} className={`w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 ${THEMES[chatTheme].hoverText} transition-all`} title="Voice Call"><Phone className="w-5 h-5" /></button>
           <button onClick={() => setShowChatSettings(!showChatSettings)} className={`w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 ${showChatSettings ? THEMES[chatTheme].text : ''} transition-all`}><MoreVertical className="w-5 h-5" /></button>
           {showChatSettings && (
             <div className="absolute right-0 top-12 w-56 bg-[#0c1222]/95 border border-white/10 rounded-2xl py-2 shadow-[0_10px_30px_rgba(0,0,0,0.5)] backdrop-blur-md z-50 animate-in fade-in slide-in-from-top-3 duration-200">
@@ -2960,8 +3283,15 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
               {activeMessages.map((msg, idx) => (
                 <motion.div key={msg.id || `fallback-msg-${idx}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex w-full gap-3 ${msg.senderName === username ? "flex-row-reverse" : msg.isSystem ? "justify-center" : "flex-row"}`}>
                   {!msg.isSystem && (
-                    <div className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1">
-                      <img src={String(msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName || "").startsWith("data:image") ? msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName : `https://api.dicebear.com/7.x/bottts/svg?seed=${msg.senderId ? (onlineUsers.find((u: any) => u.id === msg.senderId)?.avatar || msg.senderName) : msg.senderName}`} className="w-full h-full" />
+                    <div onClick={() => setShowProfileDrawer(true)} className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1 bg-[#1e1f22] cursor-pointer hover:opacity-85 transition-all" title="View Profile">
+                      {(() => {
+                        // Use avatarCache (keyed by username) for reliable avatar lookup
+                        // Falls back to onlineUsers avatar, then senderName seed
+                        const senderLookupName = msg.senderUsername || msg.senderName;
+                        const fallbackAvatar = onlineUsers.find((u: any) => u.id === msg.senderId || u.username === senderLookupName)?.avatar;
+                        const msgAvatarSrc = getAvatarSrcLocal(senderLookupName, fallbackAvatar || msg.senderName);
+                        return <img src={msgAvatarSrc} className="w-full h-full object-cover rounded-full" />;
+                      })()}
                     </div>
                   )}
 
@@ -3044,13 +3374,22 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                           {activeMessageMenuId === msg.id && (
                             <>
                               <div className="fixed inset-0 z-30" onClick={() => setActiveMessageMenuId(null)} />
-                              <div className={`absolute ${msg.senderName === username ? 'right-0' : 'left-0'} top-6 bg-[#0c1222]/95 border border-white/10 rounded-xl py-1 px-0.5 shadow-[0_4px_15px_rgba(0,0,0,0.6)] backdrop-blur-md z-40 min-w-[110px] font-mono text-[9px]`}>
+                              <div className={`absolute ${msg.senderName === username ? 'right-0' : 'left-0'} top-6 bg-[#0c1222]/95 border border-white/10 rounded-xl py-1 px-0.5 shadow-[0_4px_15px_rgba(0,0,0,0.6)] backdrop-blur-md z-40 min-w-[125px] font-mono text-[9px]`}>
+                                <button
+                                  onClick={() => {
+                                    setReplyingTo(msg);
+                                    setActiveMessageMenuId(null);
+                                  }}
+                                  className="w-full text-left px-2.5 py-1.5 hover:bg-white/5 text-emerald-400 hover:text-emerald-300 flex items-center gap-1 uppercase font-bold"
+                                >
+                                  Reply
+                                </button>
                                 <button
                                   onClick={() => {
                                     setMessages(prev => prev.filter(m => m.id !== msg.id));
                                     setActiveMessageMenuId(null);
                                   }}
-                                  className="w-full text-left px-2.5 py-1.5 hover:bg-white/5 text-rose-400 hover:text-rose-300 flex items-center gap-1 uppercase font-bold"
+                                  className="w-full text-left px-2.5 py-1.5 hover:bg-white/5 text-rose-400 hover:text-rose-300 border-t border-white/5 flex items-center gap-1 uppercase font-bold"
                                 >
                                   Delete for me
                                 </button>
@@ -3062,7 +3401,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                                     }}
                                     className="w-full text-left px-2.5 py-1.5 hover:bg-white/5 text-rose-500 hover:text-rose-400 border-t border-white/5 flex items-center gap-1 uppercase font-bold"
                                   >
-                                    Delete for all
+                                    Delete for Everyone
                                   </button>
                                 )}
                               </div>
@@ -3071,6 +3410,14 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         </div>
 
                         <div className="leading-relaxed break-all max-w-full overflow-hidden">
+                          {msg.replyToId && (
+                            <div className="mb-2 p-2 bg-black/20 border-l-4 border-emerald-500 rounded-md text-[10px] text-gray-400 leading-normal max-w-full truncate select-none border border-white/5">
+                              <span className="font-bold text-emerald-400 block mb-0.5 text-[9px] uppercase tracking-wider">
+                                {msg.replyToSender === username ? "You" : msg.replyToSender}
+                              </span>
+                              <span className="truncate block opacity-85">{msg.replyToText}</span>
+                            </div>
+                          )}
                           {msg.isImage ? (
                             <img src={msg.text} alt="Shared visual data" className="max-w-full max-h-60 rounded-xl mt-1 border border-white/10" />
                           ) : msg.isVideo ? (
@@ -3125,7 +3472,12 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
               {isTargetTyping && (
                 <div key="typing-indicator" className="flex w-full gap-3 flex-row px-4 py-2">
                   <div className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1 bg-[#1e1f22]">
-                    <img src={String(targetId ? targetName : 'AURA-OS').startsWith("data:image") ? (targetId ? targetName : 'AURA-OS') : `https://api.dicebear.com/7.x/bottts/svg?seed=${targetId ? targetName : 'AURA-OS'}`} className="w-full h-full" />
+                    {(() => {
+                      const typingTarget = onlineUsers.find((u: any) => u.id === targetId || u.username === targetName);
+                      const typingAvatar = typingTarget?.avatar || targetName || "AURA-OS";
+                      const typingAvatarSrc = String(typingAvatar).startsWith("data:image") ? typingAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${typingAvatar}`;
+                      return <img src={typingAvatarSrc} className="w-full h-full object-cover rounded-full" />;
+                    })()}
                   </div>
                   <div className="flex flex-col items-start max-w-[85%] md:max-w-[70%]">
                     <div className="p-3 px-4 relative bg-[#162032] border border-white/5 rounded-2xl rounded-tl-sm shadow-xl flex items-center gap-1.5 min-h-[40px]">
@@ -3272,6 +3624,34 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                 </button>
               </div>
             )}
+
+            {/* Message Reply Preview */}
+            <AnimatePresence>
+              {replyingTo && (
+                <motion.div
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 15 }}
+                  className="mb-3 mx-1 p-3 bg-[#111c2a] border-l-4 border-emerald-500 rounded-xl flex items-center justify-between text-xs text-gray-300 shadow-lg relative overflow-hidden"
+                >
+                  <div className="flex-1 min-w-0 pr-4 select-none">
+                    <p className="font-bold text-emerald-400 text-[10px] uppercase tracking-wider mb-0.5">
+                      Replying to {replyingTo.senderName === username ? "You" : replyingTo.senderName || replyingTo.sender}
+                    </p>
+                    <p className="truncate text-gray-400 text-xs font-mono">
+                      {replyingTo.text}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setReplyingTo(null)}
+                    className="w-7 h-7 rounded-full hover:bg-white/10 text-gray-500 hover:text-white transition-all flex items-center justify-center shrink-0"
+                    title="Cancel reply"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <div className="relative flex items-center w-full bg-[#050810] border border-white/10 rounded-full p-1 shadow-inner focus-within:border-emerald-500/50 transition-all">
               <button onClick={() => setShowEmoji(!showEmoji)} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 transition-all"><Smile className="w-5 h-5" /></button>
@@ -3427,7 +3807,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                       {Object.keys(WALLPAPERS).map(w => (
                         <button
                           key={w}
-                          onClick={() => { setChatWallpaper(w); localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, w); }}
+                          onClick={() => { setChatWallpaper(w); localStorage.setItem(`chat_wallpaper_${username}_${targetName || targetId || 'global'}`, w); }}
                           className={`py-2 px-3 rounded-xl border text-[10px] font-mono uppercase tracking-wider transition-all ${chatWallpaper === w
                               ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400 font-bold'
                               : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
@@ -3455,7 +3835,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onChange={(e) => {
                           const val = parseFloat(e.target.value);
                           setWallpaperOpacity(val);
-                          localStorage.setItem(`chat_wallpaper_opacity_${username}_${targetId || 'global'}`, val.toString());
+                          localStorage.setItem(`chat_wallpaper_opacity_${username}_${targetName || targetId || 'global'}`, val.toString());
                         }}
                         className="w-full accent-emerald-500 bg-[#050810] h-1.5 rounded-lg appearance-none cursor-pointer animate-pulse"
                       />
@@ -3474,7 +3854,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onChange={(e) => {
                           const val = parseInt(e.target.value);
                           setWallpaperBrightness(val);
-                          localStorage.setItem(`chat_wallpaper_brightness_${username}_${targetId || 'global'}`, val.toString());
+                          localStorage.setItem(`chat_wallpaper_brightness_${username}_${targetName || targetId || 'global'}`, val.toString());
                         }}
                         className="w-full accent-emerald-500 bg-[#050810] h-1.5 rounded-lg appearance-none cursor-pointer"
                       />
@@ -3493,7 +3873,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onChange={(e) => {
                           const val = parseInt(e.target.value);
                           setWallpaperContrast(val);
-                          localStorage.setItem(`chat_wallpaper_contrast_${username}_${targetId || 'global'}`, val.toString());
+                          localStorage.setItem(`chat_wallpaper_contrast_${username}_${targetName || targetId || 'global'}`, val.toString());
                         }}
                         className="w-full accent-emerald-500 bg-[#050810] h-1.5 rounded-lg appearance-none cursor-pointer"
                       />
@@ -3527,7 +3907,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                         onClick={() => {
                           if (customWallpaperUrl.trim().startsWith('http')) {
                             setChatWallpaper(customWallpaperUrl.trim());
-                            localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, customWallpaperUrl.trim());
+                            localStorage.setItem(`chat_wallpaper_${username}_${targetName || targetId || 'global'}`, customWallpaperUrl.trim());
                           }
                         }}
                         className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black uppercase tracking-widest rounded-xl transition-all shadow-[0_0_15px_rgba(16,185,129,0.3)]"
@@ -3562,7 +3942,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                           img.src = aiUrl;
                           img.onload = () => {
                             setChatWallpaper(aiUrl);
-                            localStorage.setItem(`chat_wallpaper_${username}_${targetId || 'global'}`, aiUrl);
+                            localStorage.setItem(`chat_wallpaper_${username}_${targetName || targetId || 'global'}`, aiUrl);
                             setIsGeneratingAi(false);
                           };
                           img.onerror = () => {
@@ -3603,21 +3983,77 @@ function VideoCallInterface({ socket, activeCall, myUsername, onEnd }: any) {
   const [callStatus, setCallStatus] = useState("Establishing secure line...");
   const peerRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Buffer signals that arrive before peer is initialized
+  const pendingSignalsRef = useRef<any[]>([]);
 
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+    let destroyed = false;
+
+    // ── Register call_accepted IMMEDIATELY before any async work ──
+    // This prevents missed signals if the remote answers quickly.
+    const onCallAccepted = (signal: any) => {
+      setCallStatus("Connecting...");
+      if (peerRef.current) {
+        peerRef.current.signal(signal);
+      } else {
+        // Peer not ready yet — buffer the signal
+        pendingSignalsRef.current.push(signal);
+      }
+    };
+    socket.on('call_accepted', onCallAccepted);
+
+    const getMedia = async () => {
+      try {
+        return await navigator.mediaDevices.getUserMedia({ video: activeCall.isVideo !== false, audio: true });
+      } catch (e) {
+        console.warn("Failed to get video + audio, falling back to audio only:", e);
+        try {
+          return await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+        } catch (e2) {
+          throw e2;
+        }
+      }
+    };
+
+    getMedia().then(stream => {
+      if (destroyed) { stream.getTracks().forEach(t => t.stop()); return; }
       streamRef.current = stream;
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
       const peer = new Peer({
         initiator: activeCall.isCaller,
         trickle: false,
-        stream: stream
+        stream: stream,
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            {
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            }
+          ]
+        }
       });
 
       peer.on('signal', (data: any) => {
         if (activeCall.isCaller) {
-          socket.emit('call_user', { userToCall: activeCall.userId, signalData: data, from: myUsername, callerName: myUsername });
+          socket.emit('call_user', { userToCall: activeCall.userId, targetUsername: activeCall.username, signalData: data, from: myUsername, callerName: myUsername, isVideo: activeCall.isVideo !== false });
         } else {
           socket.emit('answer_call', { signal: data, to: activeCall.userId });
         }
@@ -3628,32 +4064,46 @@ function VideoCallInterface({ socket, activeCall, myUsername, onEnd }: any) {
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
       });
 
+      peer.on('connect', () => {
+        if (!destroyed) setCallStatus("Connected. Encrypted E2EE Call.");
+      });
+
       peer.on('error', (err: any) => {
-        console.error(err);
-        setCallStatus("Connection failed.");
+        console.error('[WebRTC Error]', err);
+        if (!destroyed) setCallStatus("Connection failed. Check your network.");
       });
 
-      socket.on('call_accepted', (signal: any) => {
-        setCallStatus("Connecting...");
-        peer.signal(signal);
+      peer.on('close', () => {
+        if (!destroyed) setCallStatus("Call ended.");
       });
 
+      peerRef.current = peer;
+
+      // Drain any buffered call_accepted signals that arrived before peer was ready
+      if (pendingSignalsRef.current.length > 0) {
+        pendingSignalsRef.current.forEach(sig => peer.signal(sig));
+        pendingSignalsRef.current = [];
+      }
+
+      // If receiver: signal the peer with the caller's initial offer
       if (!activeCall.isCaller && activeCall.initialSignal) {
         peer.signal(activeCall.initialSignal);
       }
-
-      peerRef.current = peer;
     }).catch(err => {
-      setCallStatus("Camera/Microphone access denied.");
+      console.error('[Media Error]', err);
+      if (!destroyed) setCallStatus("Camera/Microphone access denied.");
     });
 
     return () => {
-      socket.off('call_accepted');
+      destroyed = true;
+      socket.off('call_accepted', onCallAccepted);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
       if (peerRef.current) {
         peerRef.current.destroy();
+        peerRef.current = null;
       }
     };
   }, []);
@@ -3665,16 +4115,39 @@ function VideoCallInterface({ socket, activeCall, myUsername, onEnd }: any) {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-[#050810]/95 backdrop-blur-lg z-40 flex flex-col items-center justify-center">
+      {(callStatus === "Establishing secure line..." || callStatus === "Connecting...") && (
+        <audio autoPlay loop src="https://assets.mixkit.co/active_storage/sfx/2805/2805-preview.mp3" />
+      )}
       <h2 className="text-2xl font-bold text-white mb-2">{activeCall.username}</h2>
       <p className="text-emerald-500 font-mono text-xs mb-8 flex items-center gap-2"><Lock className="w-3 h-3" /> {callStatus}</p>
 
-      <div className="relative w-full max-w-4xl aspect-video bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl">
-        <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
+      {activeCall.isVideo === false ? (
+        <div className="flex flex-col items-center justify-center p-8 bg-[#0b141a] rounded-3xl border border-white/10 shadow-2xl w-full max-w-md aspect-square mb-6">
+          <div className="relative mb-6 select-none">
+            {/* Pulsing visual wave rings */}
+            <div className="absolute inset-0 rounded-full bg-emerald-500/10 animate-ping" style={{ animationDuration: '3s' }} />
+            <div className="absolute inset-[-8px] rounded-full border-2 border-emerald-500/20 animate-pulse" />
+            
+            <div className="w-28 h-28 rounded-full border-4 border-emerald-500/80 overflow-hidden bg-[#0c1222] shadow-[0_0_40px_rgba(16,185,129,0.25)] relative z-10 flex items-center justify-center">
+              <img src={activeCall.avatarSrc || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeCall.username}`} alt="Contact Avatar" className="w-full h-full object-cover" />
+            </div>
+          </div>
+          <h3 className="text-xl font-bold text-white tracking-wide">{activeCall.username}</h3>
+          <p className="text-emerald-400 font-mono text-[10px] uppercase tracking-widest mt-2 animate-pulse">{callStatus}</p>
 
-        <div className="absolute bottom-6 right-6 w-48 aspect-video bg-black rounded-xl overflow-hidden border-2 border-emerald-500 shadow-lg">
-          <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover transform -scale-x-100"></video>
+          {/* Hidden video elements to allow WebRTC streams to process */}
+          <video ref={remoteVideoRef} autoPlay playsInline className="hidden"></video>
+          <video ref={localVideoRef} autoPlay playsInline muted className="hidden"></video>
         </div>
-      </div>
+      ) : (
+        <div className="relative w-full max-w-4xl aspect-video bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl">
+          <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
+
+          <div className="absolute bottom-6 right-6 w-48 aspect-video bg-black rounded-xl overflow-hidden border-2 border-emerald-500 shadow-lg">
+            <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover transform -scale-x-100"></video>
+          </div>
+        </div>
+      )}
 
       <div className="mt-8 flex gap-6">
         <button onClick={endCall} className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-[0_0_30px_rgba(239,68,68,0.4)] transition-all">
@@ -4090,13 +4563,17 @@ function DiscordDevHub({ socket, username, nicknames, qaMessages, setQaMessages,
       if (!isImage && !isVideo) return;
 
       const reader = new FileReader();
-      reader.onload = (ev) => {
+      reader.onload = async (ev) => {
+        let result = ev.target?.result as string;
+        if (isImage) {
+          result = await compressImage(result, 600, 600, 0.6);
+        }
         const userMsg = {
           id: `qa_${Date.now()}`,
           sender: username,
           avatar: username,
           isBot: false,
-          text: ev.target?.result as string,
+          text: result,
           isImage: isImage,
           isVideo: isVideo,
           timestamp: new Date()
@@ -4608,7 +5085,12 @@ Aura handles VoIP signaling over WebSockets. Once a Call is requested:
                         className="group flex gap-4 p-1 rounded hover:bg-white/5 transition-all relative"
                       >
                         <div className="w-10 h-10 rounded-full border border-white/5 overflow-hidden bg-[#1e1f22] shrink-0 mt-0.5 relative">
-                          <img src={String(msg.avatar || "").startsWith("data:image") ? msg.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${msg.avatar}`} className="w-full h-full" />
+                          {(() => {
+                            const senderUser = onlineUsers.find((u: any) => u.username === msg.sender);
+                            const msgAvatar = senderUser?.avatar || msg.avatar || msg.sender;
+                            const msgAvatarSrc = String(msgAvatar || "").startsWith("data:image") ? msgAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${msgAvatar || msg.sender}`;
+                            return <img src={msgAvatarSrc} className="w-full h-full" />;
+                          })()}
                         </div>
                         <div className="flex-1 overflow-hidden">
                           <div className="flex items-baseline gap-2 mb-1">
@@ -4695,7 +5177,12 @@ Aura handles VoIP signaling over WebSockets. Once a Call is requested:
                   {isTyping && typingUser && (
                     <div className="flex gap-4 p-1">
                       <div className="w-10 h-10 rounded-full border border-white/5 overflow-hidden bg-[#1e1f22] shrink-0 mt-0.5">
-                        <img src={String(typingUser.avatar || "").startsWith("data:image") ? typingUser.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${typingUser.avatar}`} className="w-full h-full" />
+                        {(() => {
+                          const typingTarget = onlineUsers.find((u: any) => u.username === typingUser.name);
+                          const typingAvatar = typingTarget?.avatar || typingUser.avatar || typingUser.name;
+                          const typingAvatarSrc = String(typingAvatar || "").startsWith("data:image") ? typingAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${typingAvatar || typingUser.name}`;
+                          return <img src={typingAvatarSrc} className="w-full h-full" />;
+                        })()}
                       </div>
                       <div className="flex-1">
                         <div className="flex items-baseline gap-2 mb-1 font-mono">
@@ -4743,7 +5230,12 @@ Aura handles VoIP signaling over WebSockets. Once a Call is requested:
                               }}
                               className="w-full flex items-center gap-3 px-3 py-2 hover:bg-[#5865F2]/20 transition-all text-left"
                             >
-                              <img src={String(m.avatar || "").startsWith("data:image") ? m.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${m.avatar}`} className="w-6 h-6 rounded-full border border-white/10" />
+                              {(() => {
+                                const mentionUser = onlineUsers.find((u: any) => u.username === m.name);
+                                const mentionAvatar = mentionUser?.avatar || m.avatar || m.name;
+                                const mentionAvatarSrc = String(mentionAvatar || "").startsWith("data:image") ? mentionAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${mentionAvatar || m.name}`;
+                                return <img src={mentionAvatarSrc} className="w-6 h-6 rounded-full border border-white/10" />;
+                              })()}
                               <span className="text-sm text-white font-mono font-bold">{m.name}</span>
                               {m.isBot && <span className="bg-[#5865F2] text-white text-[9px] font-bold px-1 py-0.5 rounded uppercase">BOT</span>}
                             </button>
@@ -4946,7 +5438,12 @@ void AMyGameMode::ConnectToAuraServer() {
                 {onlineMembers.map(mem => (
                   <div key={mem.name} className="group flex items-center gap-2 p-1 rounded hover:bg-white/5 transition-all">
                     <div className="w-8 h-8 rounded-full border border-white/5 bg-[#020202] relative shrink-0">
-                      <img src={String(mem.name || "").startsWith("data:image") ? mem.name : `https://api.dicebear.com/7.x/bottts/svg?seed=${mem.name}`} className="w-full h-full" />
+                      {(() => {
+                        const memUser = onlineUsers.find((u: any) => u.username === mem.name);
+                        const memAvatar = memUser?.avatar || mem.name;
+                        const memAvatarSrc = String(memAvatar || "").startsWith("data:image") ? memAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${memAvatar || mem.name}`;
+                        return <img src={memAvatarSrc} className="w-full h-full" />;
+                      })()}
                       <div className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#050505] ${(mem.name === username ? 'online' : memberStatuses[mem.name]) === 'online' ? 'bg-[#23a55a]' : 'bg-[#f0b232]'
                         }`} />
                     </div>
@@ -4977,7 +5474,12 @@ void AMyGameMode::ConnectToAuraServer() {
                 {offlineMembers.map(mem => (
                   <div key={mem.name} className="flex items-center gap-2 p-1 rounded hover:bg-white/5 transition-all opacity-50 hover:opacity-100">
                     <div className="w-8 h-8 rounded-full border border-white/5 bg-[#020202] relative shrink-0">
-                      <img src={String(mem.name || "").startsWith("data:image") ? mem.name : `https://api.dicebear.com/7.x/bottts/svg?seed=${mem.name}`} className="w-full h-full" />
+                      {(() => {
+                        const memUser = onlineUsers.find((u: any) => u.username === mem.name);
+                        const memAvatar = memUser?.avatar || mem.name;
+                        const memAvatarSrc = String(memAvatar || "").startsWith("data:image") ? memAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${memAvatar || mem.name}`;
+                        return <img src={memAvatarSrc} className="w-full h-full" />;
+                      })()}
                       <div className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#050505] bg-[#80848e]" />
                     </div>
                     <div>
@@ -4993,6 +5495,107 @@ void AMyGameMode::ConnectToAuraServer() {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function CallLogsPage({ callLogs, onCall, username, onlineUsers }: any) {
+  return (
+    <div className="w-full h-full overflow-y-auto flex flex-col bg-[#050810]">
+      {/* ── Hero Header ── */}
+      <div className="relative shrink-0 h-48 md:h-56 overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-br from-[#0b211a] via-[#050810] to-[#0d160f]" />
+        <div className="absolute -top-16 -left-16 w-72 h-72 rounded-full bg-green-500/10 blur-3xl" />
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-full h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent" />
+        <div className="absolute inset-0 opacity-10"
+          style={{ backgroundImage: 'linear-gradient(rgba(34,197,94,0.3) 1px, transparent 1px), linear-gradient(90deg, rgba(34,197,94,0.3) 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+        
+        <div className="relative z-10 h-full flex flex-col items-center justify-center text-center px-6">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shadow-[0_0_20px_rgba(34,197,94,0.5)]">
+              <PhoneCall className="w-5 h-5 text-white" />
+            </div>
+            <h1 className="text-3xl md:text-4xl font-black text-white tracking-tight font-mono">
+              CALL <span className="text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-emerald-400">HISTORY</span>
+            </h1>
+          </div>
+          <p className="text-gray-400 text-sm font-mono tracking-widest uppercase">
+            End-to-End Encrypted Voice & Video Comm Logs
+          </p>
+        </div>
+      </div>
+
+      <div className="flex-1 px-6 py-6 overflow-y-auto">
+        {!callLogs || callLogs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-4 border border-white/10">
+              <Phone className="w-6 h-6 text-gray-600" />
+            </div>
+            <p className="text-gray-400 font-mono text-sm">No call logs found</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2 max-w-4xl mx-auto">
+            {callLogs.map((log: any) => {
+              const isMissed = log.text.toLowerCase().includes("missed") || log.text.toLowerCase().includes("declined");
+              const isOutgoing = log.callerUsername === username;
+              const targetUsername = isOutgoing ? log.receiverUsername : log.callerUsername;
+              
+              const targetUser = onlineUsers?.find((u: any) => u.username === targetUsername) || { id: targetUsername, username: targetUsername };
+              const isOnline = onlineUsers?.some((u: any) => u.username === targetUsername && u.status === 'online');
+
+              const logDate = new Date(log.timestamp);
+              const timeStr = logDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              const dateStr = logDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+              return (
+                <div key={log.id} className="flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-green-500/30 transition-all group">
+                  <div className="flex items-center gap-4">
+                    <div className="relative">
+                      <div className="w-12 h-12 rounded-full overflow-hidden border border-white/20 bg-[#050810]">
+                        <img src={String(targetUser.avatar || "").startsWith("data:image") ? targetUser.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${targetUser.avatar || targetUsername}`} className="w-full h-full" alt="avatar" />
+                      </div>
+                      {isOnline && <div className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#050810]"></div>}
+                    </div>
+                    
+                    <div className="flex flex-col">
+                      <span className={`font-bold font-mono ${isMissed ? 'text-red-400' : 'text-white'}`}>
+                        {targetUsername}
+                      </span>
+                      <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 font-mono">
+                        {isOutgoing ? (
+                          <span className="text-emerald-500 transform rotate-45">↗</span>
+                        ) : (
+                          <span className="text-blue-500 transform rotate-45">↙</span>
+                        )}
+                        <span>{log.isVideo ? 'Video' : 'Voice'} Call</span>
+                        <span className="text-gray-600">•</span>
+                        <span>{dateStr} {timeStr}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => onCall(targetUser, false)}
+                      className="w-10 h-10 rounded-xl bg-white/5 hover:bg-cyan-500/20 text-gray-400 hover:text-cyan-400 border border-white/10 hover:border-cyan-500/50 flex items-center justify-center transition-all"
+                      title="Audio Call"
+                    >
+                      <Phone className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => onCall(targetUser, true)}
+                      className="w-10 h-10 rounded-xl bg-white/5 hover:bg-emerald-500/20 text-gray-400 hover:text-emerald-400 border border-white/10 hover:border-emerald-500/50 flex items-center justify-center transition-all"
+                      title="Video Call"
+                    >
+                      <Video className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

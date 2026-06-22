@@ -16,6 +16,7 @@ const socketRoomMap = new Map(); // socketId → roomId
 const communityLobbies = new Map(); // roomId → { roomId, host, players: [], maxPlayers: 4 }
 // Timers for community invites: roomId -> Timeout
 const inviteTimers = new Map();
+const ongoingCalls = new Map(); // socketId -> call object
 
 function broadcastCommunityLobbies() {
     const lobbies = Array.from(communityLobbies.values());
@@ -134,6 +135,7 @@ const broadcastUsers = () => {
             const showLS = dbUser ? dbUser.showLastSeen !== false : true;
             return {
                 ...u,
+                avatar: dbUser?.avatar || u.avatar || u.username,
                 about: dbUser?.about || "Active Neural Agent",
                 showLastSeen: showLS,
                 lastSeen: showLS ? (dbUser?.lastSeen || null) : null
@@ -375,7 +377,10 @@ io.on("connection", (socket) => {
             isVideo: !!data.isVideo,
             isUser: true,
             status: msgStatus,
-            timestamp: new Date()
+            timestamp: new Date(),
+            replyToId: data.replyToId || null,
+            replyToSender: data.replyToSender || null,
+            replyToText: data.replyToText || null
         };
         db.messages.push(newMsg);
         saveDb();
@@ -432,7 +437,7 @@ io.on("connection", (socket) => {
                                     if (game) {
                                         game.betAmount = negotiation.offer;
                                         const botSocketId = `bot_${targetAgent.id}_${Date.now()}`;
-                                        game.add_bot_player ? game.add_bot_player(botSocketId, targetAgent.username) : game.addPlayer(botSocketId, targetAgent.username, true);
+                                        game.add_bot_player ? game.add_bot_player(botSocketId, targetAgent.username) : game.addPlayer(botSocketId, targetAgent.username, true, targetAgent.avatar);
 
                                         // Check if the user who negotiated has enough balance (without debiting yet)
                                         const user = activeUsers.get(socket.id);
@@ -626,7 +631,7 @@ io.on("connection", (socket) => {
         const roomId = data?.roomId || generateRoomId();
         const game = new LudoGame(roomId, data?.betAmount || 0);
         const user = activeUsers.get(socket.id);
-        game.addPlayer(socket.id, user?.username || "Agent");
+        game.addPlayer(socket.id, user?.username || "Agent", false, user?.avatar);
         ludoRooms.set(roomId, game);
         socketRoomMap.set(socket.id, roomId);
         socket.join(roomId);
@@ -714,7 +719,7 @@ io.on("connection", (socket) => {
         const game = ludoRooms.get(data.roomId);
         if (game) {
             const user = activeUsers.get(socket.id);
-            game.addPlayer(socket.id, user?.username || "Agent");
+            game.addPlayer(socket.id, user?.username || "Agent", false, user?.avatar);
             socketRoomMap.set(socket.id, data.roomId);
             socket.join(data.roomId);
             broadcastGameState(game, io);
@@ -915,7 +920,7 @@ io.on("connection", (socket) => {
         if (!game) {
             const roomId = generateRoomId();
             game = new LudoGame(roomId, 0);
-            game.addPlayer(socket.id, userObj.username || "Agent");
+            game.addPlayer(socket.id, userObj.username || "Agent", false, userObj.avatar);
             ludoRooms.set(roomId, game);
             socketRoomMap.set(socket.id, roomId);
             socket.join(roomId);
@@ -1003,6 +1008,7 @@ io.on("connection", (socket) => {
                 io.to(targetSid).emit("ludo_invite_received", {
                     roomId: game.roomId,
                     fromName: userObj.username || "Player",
+                    fromAvatar: userObj.avatar,
                     playerCount: game.players.length
                 });
 
@@ -1208,16 +1214,194 @@ io.on("connection", (socket) => {
         broadcastUsers();
     });
 
+    // --- WebRTC call signaling events ---
+    socket.on("call_user", (data) => {
+        // data: { userToCall, targetUsername, signalData, from, callerName, isVideo }
+        const callerUserObj = activeUsers.get(socket.id);
+        const callerUsername = data.from || (callerUserObj ? callerUserObj.username : "Unknown");
+        const callerAvatar = callerUserObj ? callerUserObj.avatar : null;
+
+        const receiverUsername = data.targetUsername || "Unknown";
+        console.log(`[CALL] ${callerUsername} (${socket.id}) -> ${receiverUsername} | isVideo:${!!data.isVideo}`);
+
+        // Block self-calls
+        if (callerUsername === receiverUsername) {
+            socket.emit("call_ended", { reason: "Cannot call yourself." });
+            return;
+        }
+        
+        const call = {
+            callerSocketId: socket.id,
+            callerUsername: callerUsername,
+            receiverUsername: receiverUsername,
+            startTime: null,
+            established: false,
+            isVideo: !!data.isVideo
+        };
+        
+        // Clear any stale call entries for this caller
+        ongoingCalls.set(socket.id, call);
+        
+        // Find all active sockets for the receiver by username and send them the call
+        let callSent = false;
+        for (const [sid, u] of activeUsers.entries()) {
+            if (u.username === receiverUsername && sid !== socket.id) {
+                ongoingCalls.set(sid, call);
+                io.to(sid).emit("incoming_call", {
+                    from: socket.id,
+                    callerName: callerUsername,
+                    callerAvatar: callerAvatar,
+                    signal: data.signalData,
+                    isVideo: !!data.isVideo
+                });
+                console.log(`[CALL] Signal sent to ${u.username} (${sid})`);
+                callSent = true;
+            }
+        }
+
+        // If receiver not found online, notify the caller
+        if (!callSent) {
+            console.log(`[CALL] Receiver '${receiverUsername}' not found. Online users:`, Array.from(activeUsers.values()).map(u => u.username));
+            socket.emit("call_ended", { reason: "User is offline or unavailable." });
+            ongoingCalls.delete(socket.id);
+        }
+    });
+
+    socket.on("get_call_logs", () => {
+        const user = activeUsers.get(socket.id);
+        if (!user) return;
+        
+        const logs = db.messages.filter(m => 
+            m.isSystem && 
+            m.text && 
+            m.text.startsWith("📞") && 
+            (m.senderUsername === user.username || m.targetUsername === user.username)
+        ).map(m => ({
+            id: m.id,
+            callerUsername: m.senderUsername,
+            receiverUsername: m.targetUsername,
+            text: m.text,
+            timestamp: m.timestamp,
+            isVideo: !m.text.includes("voice") // Voice call logs contain 'voice'
+        })).reverse(); // Newest first
+        
+        socket.emit("receive_call_logs", logs);
+    });
+
+    socket.on("answer_call", (data) => {
+        // data: { signal, to } — 'to' is the caller's socket ID
+        const call = ongoingCalls.get(socket.id);
+        console.log(`[CALL] answer_call from ${socket.id} | call:`, call ? `${call.callerUsername}->${call.receiverUsername}` : 'NOT FOUND');
+        if (call) {
+            call.startTime = Date.now();
+            call.established = true;
+
+            // Cancel incoming_call on all OTHER sockets of the same receiver (they picked up on one tab)
+            for (const [sid, u] of activeUsers.entries()) {
+                if (u.username === call.receiverUsername && sid !== socket.id) {
+                    io.to(sid).emit("call_ended");
+                }
+            }
+        }
+        // Send the answer signal back to the actual caller socket
+        const targetSocketId = (call && call.callerSocketId) ? call.callerSocketId : data.to;
+        console.log(`[CALL] Sending call_accepted to caller socket: ${targetSocketId}`);
+        io.to(targetSocketId).emit("call_accepted", data.signal);
+    });
+
+    socket.on("end_call", () => {
+        handleEndCall(socket.id);
+    });
+
     socket.on("disconnect", () => {
         const user = activeUsers.get(socket.id);
         if (user && db.users[user.username]) {
             db.users[user.username].lastSeen = new Date().toISOString();
             saveDb();
         }
+        
+        handleEndCall(socket.id);
+
         activeUsers.delete(socket.id);
         broadcastUsers();
     });
 });
+
+function handleEndCall(socketId) {
+    const call = ongoingCalls.get(socketId);
+    if (!call) return;
+
+    // Collect all socket IDs involved (caller + all tabs of both users)
+    const involvedSockets = new Set();
+    involvedSockets.add(call.callerSocketId);
+    for (const [sid, u] of activeUsers.entries()) {
+        if (u.username === call.callerUsername || u.username === call.receiverUsername) {
+            involvedSockets.add(sid);
+        }
+    }
+
+    // Remove all involved sockets from ongoingCalls
+    for (const sid of involvedSockets) {
+        ongoingCalls.delete(sid);
+    }
+
+    // Calculate duration
+    let isMissed = !call.established || !call.startTime;
+    const callTypeStr = call.isVideo ? 'video' : 'voice';
+    let durationText = '';
+    if (isMissed) {
+        durationText = `📞 Missed ${callTypeStr} call`;
+    } else {
+        const durationMs = Date.now() - call.startTime;
+        const durationSec = Math.floor(durationMs / 1000);
+        const mins = Math.floor(durationSec / 60);
+        const secs = durationSec % 60;
+        durationText = `📞 ${call.isVideo ? 'Video' : 'Voice'} call ended · ${mins}m ${secs}s`;
+    }
+
+    // Save system message to database
+    const sysMsg = {
+        id: `sys_call_${Date.now()}`,
+        senderName: call.callerUsername,
+        senderUsername: call.callerUsername,
+        senderId: call.callerSocketId,
+        targetUsername: call.receiverUsername,
+        text: durationText,
+        isEncrypted: false,
+        isUser: false,
+        isSystem: true,
+        timestamp: new Date().toISOString()
+    };
+    db.messages.push(sysMsg);
+    saveDb();
+
+    // Notify all involved sockets: close UI + show system msg
+    for (const sid of involvedSockets) {
+        io.to(sid).emit("call_ended");
+        io.to(sid).emit("receive_message", sysMsg);
+    }
+
+    // Push refreshed call logs to all involved users after a short delay
+    setTimeout(() => {
+        for (const sid of involvedSockets) {
+            const u = activeUsers.get(sid);
+            if (!u) continue;
+            const logs = db.messages.filter(m =>
+                m.isSystem && m.text && m.text.startsWith("📞") &&
+                (m.senderUsername === u.username || m.targetUsername === u.username)
+            ).map(m => ({
+                id: m.id,
+                callerUsername: m.senderUsername,
+                receiverUsername: m.targetUsername,
+                text: m.text,
+                timestamp: m.timestamp,
+                isVideo: !m.text.toLowerCase().includes("voice")
+            })).reverse();
+            io.to(sid).emit("receive_call_logs", logs);
+        }
+    }, 600);
+}
+
 
 function distributeLudoWinnings(game, ioRef) {
     if (game.winningsDistributed) return;

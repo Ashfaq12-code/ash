@@ -34,13 +34,13 @@ class LudoGame {
     this.countdown = null;
   }
 
-  addPlayer(socketId, name, isBot = false) {
+  addPlayer(socketId, name, isBot = false, avatar = null) {
     if (this.players.length >= 4) return { error: 'Room full' };
     if (this.state !== 'waiting') return { error: 'Game already started' };
     const existing = this.players.find(p => p.socketId === socketId);
     if (existing) return { error: 'Already in game' };
     const colorIdx = this.players.length;
-    this.players.push({ socketId, name, colorIdx, isBot, avatar: name });
+    this.players.push({ socketId, name, colorIdx, isBot, avatar: avatar || name });
     return { success: true, colorIdx };
   }
 
