@@ -1354,28 +1354,83 @@ export default function NeuralGameWorld({ username, onBack, initialRoomId, socke
                 )}
 
                 {gameState?.state === 'finished' && (
-                    <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-50 backdrop-blur-xl">
-                        <h2 className="text-6xl font-black text-amber-400 mb-6 animate-bounce drop-shadow-[0_0_20px_rgba(251,191,36,0.5)] uppercase tracking-widest">VICTORY</h2>
+                    <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-50 backdrop-blur-xl p-6 overflow-y-auto">
+                        <div className="text-center mb-6">
+                            <h2 className="text-6xl font-black text-amber-400 animate-bounce drop-shadow-[0_0_20px_rgba(251,191,36,0.5)] uppercase tracking-widest">VICTORY</h2>
+                            <p className="text-emerald-400 font-mono text-xs uppercase tracking-[0.3em] mt-1">Multiplayer Tiered Prize Distribution</p>
+                        </div>
 
-                        <div className="flex flex-col gap-4 mb-10 w-full max-w-md">
+                        <div className="flex flex-col gap-3 mb-8 w-full max-w-lg">
                             {gameState.rankings && gameState.rankings.map((playerIdx: number, i: number) => {
                                 const p = gameState.players[playerIdx];
                                 if (!p) return null;
                                 const totalPlayers = gameState.players.length;
+                                const totalPot = (gameState.betAmount || 0) * totalPlayers;
+
                                 let medal = '🏅 PARTICIPANT';
-                                if (totalPlayers === 4) {
-                                    medal = ['🥇 1ST PLACE', '🥈 2ND PLACE', '🥉 3RD PLACE', '🏅 4TH PLACE'][i];
-                                } else if (totalPlayers === 3) {
-                                    medal = ['🥇 1ST PLACE', '🥈 2ND PLACE', '🥉 3RD PLACE'][i];
-                                } else if (totalPlayers === 2) {
-                                    medal = ['🥇 1ST PLACE', '🥈 2ND PLACE'][i];
+                                let prizeLabel = '0 LKR';
+                                let prizeClass = 'text-gray-400';
+
+                                if (i === 0) {
+                                    medal = '🥇 1ST PLACE CHAMPION';
+                                    const prizeAmt = Math.max(10000, Math.floor(totalPot * 0.60));
+                                    prizeLabel = `+${prizeAmt.toLocaleString()} LKR (CREDITED)`;
+                                    prizeClass = 'text-amber-400 font-black';
+                                } else if (i === 1) {
+                                    medal = '🥈 2ND PLACE RUNNER-UP';
+                                    const prizeAmt = Math.max(5000, Math.floor(totalPot * 0.25));
+                                    prizeLabel = `+${prizeAmt.toLocaleString()} LKR (CREDITED)`;
+                                    prizeClass = 'text-emerald-400 font-bold';
+                                } else if (i === 2) {
+                                    medal = '🥉 3RD PLACE FINISHER';
+                                    const prizeAmt = Math.max(2000, Math.floor(totalPot * 0.15));
+                                    prizeLabel = `+${prizeAmt.toLocaleString()} LKR (CREDITED)`;
+                                    prizeClass = 'text-cyan-400 font-bold';
                                 } else {
-                                    medal = '🥇 1ST PLACE';
+                                    medal = '❌ 4TH PLACE (DEFEATED)';
+                                    prizeLabel = '0 LKR (LOST)';
+                                    prizeClass = 'text-red-400 font-semibold';
                                 }
+
                                 return (
-                                    <div key={i} className={`flex items-center gap-6 bg-[#0c1222] p-4 rounded-3xl border shadow-2xl ${i === 0 ? 'border-amber-400' : 'border-white/10'}`}>
-                                        <div className="w-16 h-16 rounded-full border-4 flex items-center justify-center overflow-hidden" style={{ borderColor: COLORS[playerIdx] }}><img src={String(p.avatar || "").startsWith("data:image") ? p.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full object-cover bg-[#050810]" /></div>
-                                        <div><p className={`font-mono text-sm uppercase tracking-widest mb-1 ${i === 0 ? 'text-amber-400' : 'text-emerald-500'}`}>{medal}</p><p className="text-2xl text-white font-black">{p.name}</p></div>
+                                    <div key={i} className={`flex items-center justify-between bg-[#0c1222] p-4 rounded-3xl border shadow-2xl ${i === 0 ? 'border-amber-400 shadow-[0_0_30px_rgba(245,158,11,0.2)]' : 'border-white/10'}`}>
+                                        <div className="flex items-center gap-4">
+                                            <div className="w-14 h-14 rounded-full border-4 flex items-center justify-center overflow-hidden shrink-0" style={{ borderColor: COLORS[playerIdx] }}>
+                                                <img src={String(p.avatar || "").startsWith("data:image") ? p.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full object-cover bg-[#050810]" />
+                                            </div>
+                                            <div>
+                                                <p className={`font-mono text-xs uppercase tracking-widest mb-1 ${i === 0 ? 'text-amber-400 font-bold' : 'text-emerald-500'}`}>{medal}</p>
+                                                <p className="text-xl text-white font-black">{p.name}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <span className={`font-mono text-sm uppercase px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 ${prizeClass}`}>
+                                                {prizeLabel}
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+
+                            {/* Show 4th place / unranked if needed */}
+                            {gameState.players.map((p: any, pIdx: number) => {
+                                if (gameState.rankings && gameState.rankings.includes(pIdx)) return null;
+                                return (
+                                    <div key={`unranked_${pIdx}`} className="flex items-center justify-between bg-[#0c1222]/60 p-4 rounded-3xl border border-red-500/20">
+                                        <div className="flex items-center gap-4">
+                                            <div className="w-14 h-14 rounded-full border-4 flex items-center justify-center overflow-hidden shrink-0 opacity-60" style={{ borderColor: COLORS[pIdx] }}>
+                                                <img src={String(p.avatar || "").startsWith("data:image") ? p.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${p.avatar || p.name}`} className="w-full h-full object-cover bg-[#050810]" />
+                                            </div>
+                                            <div>
+                                                <p className="font-mono text-xs uppercase tracking-widest mb-1 text-red-400">❌ 4TH PLACE (DEFEATED)</p>
+                                                <p className="text-xl text-gray-300 font-bold">{p.name}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <span className="font-mono text-xs uppercase px-3 py-1.5 rounded-xl bg-black/40 border border-red-500/30 text-red-400 font-bold">
+                                                0 LKR (LOST)
+                                            </span>
+                                        </div>
                                     </div>
                                 );
                             })}

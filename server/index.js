@@ -626,6 +626,124 @@ io.on("connection", (socket) => {
         }
     });
 
+    // --- Peer-to-Peer Real-Time Money Transfer Handler ---
+    socket.on("transfer_wallet_funds", ({ recipientUsername, amount, note }) => {
+        const sender = activeUsers.get(socket.id);
+        if (!sender || !sender.username) {
+            return socket.emit("transfer_error", { message: "You must be logged in to an online account to send money." });
+        }
+
+        const senderUser = db.users[sender.username];
+        if (!senderUser) {
+            return socket.emit("transfer_error", { message: "Sender account not found." });
+        }
+
+        const transferAmt = Math.floor(parseFloat(amount));
+        if (isNaN(transferAmt) || transferAmt <= 0) {
+            return socket.emit("transfer_error", { message: "Please enter a valid positive amount (e.g. 1000 LKR)." });
+        }
+
+        if (senderUser.wallet < transferAmt) {
+            return socket.emit("transfer_error", { message: `Insufficient wallet balance! Available: ${senderUser.wallet.toLocaleString()} LKR.` });
+        }
+
+        if (!recipientUsername || recipientUsername.trim() === "") {
+            return socket.emit("transfer_error", { message: "Please specify a recipient username." });
+        }
+
+        const cleanRecipient = recipientUsername.trim().replace(/^@/, '');
+
+        if (cleanRecipient.toLowerCase() === sender.username.toLowerCase()) {
+            return socket.emit("transfer_error", { message: "You cannot transfer funds to yourself." });
+        }
+
+        // Find recipient in registered users database (case-insensitive search)
+        const recipientKey = Object.keys(db.users).find(u => u.toLowerCase() === cleanRecipient.toLowerCase());
+
+        if (!recipientKey) {
+            return socket.emit("transfer_error", { message: `Recipient '@${cleanRecipient}' was not found in registered accounts.` });
+        }
+
+        const recipientUser = db.users[recipientKey];
+        const txnId = "TXN-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
+        const nowIso = new Date().toISOString();
+        const noteText = note && note.trim() !== "" ? note.trim() : "Direct Neural Wallet Transfer";
+
+        // Deduct from sender wallet
+        senderUser.wallet -= transferAmt;
+        if (!senderUser.history) senderUser.history = [];
+        const senderHistoryItem = {
+            type: 'cash_out',
+            amount: transferAmt,
+            reason: `Sent ${transferAmt.toLocaleString()} LKR to @${recipientKey} (${noteText}) 💸`,
+            date: nowIso,
+            txnId: txnId,
+            sender: sender.username,
+            recipient: recipientKey,
+            note: noteText,
+            status: 'COMPLETED'
+        };
+        senderUser.history.unshift(senderHistoryItem);
+
+        // Add to recipient wallet
+        recipientUser.wallet += transferAmt;
+        if (!recipientUser.history) recipientUser.history = [];
+        const recipientHistoryItem = {
+            type: 'cash_in',
+            amount: transferAmt,
+            reason: `Received ${transferAmt.toLocaleString()} LKR from @${sender.username} (${noteText}) 📥`,
+            date: nowIso,
+            txnId: txnId,
+            sender: sender.username,
+            recipient: recipientKey,
+            note: noteText,
+            status: 'COMPLETED'
+        };
+        recipientUser.history.unshift(recipientHistoryItem);
+
+        saveDb();
+
+        const receiptPayload = {
+            txnId: txnId,
+            sender: sender.username,
+            recipient: recipientKey,
+            amount: transferAmt,
+            note: noteText,
+            date: nowIso,
+            status: 'SUCCESS'
+        };
+
+        // Notify Sender
+        socket.emit("wallet_update", senderUser);
+        socket.emit("transfer_success", {
+            receipt: receiptPayload,
+            message: `Successfully transferred ${transferAmt.toLocaleString()} LKR to @${recipientKey}!`
+        });
+
+        // Notify Recipient if online
+        activeUsers.forEach((activeUserObj, activeSocketId) => {
+            if (activeUserObj.username && activeUserObj.username.toLowerCase() === recipientKey.toLowerCase()) {
+                io.to(activeSocketId).emit("wallet_update", recipientUser);
+                io.to(activeSocketId).emit("ludo_transaction", {
+                    type: 'credit',
+                    amount: transferAmt,
+                    message: `📥 Received ${transferAmt.toLocaleString()} LKR from @${sender.username}!`
+                });
+                io.to(activeSocketId).emit("transfer_received", { receipt: receiptPayload });
+            }
+        });
+    });
+
+    // Fetch registered users for P2P transfer selection
+    socket.on("get_registered_users", () => {
+        const userList = Object.keys(db.users).map(u => ({
+            username: u,
+            avatar: db.users[u].avatar || u,
+            wallet: db.users[u].wallet || 0
+        }));
+        socket.emit("registered_users_list", userList);
+    });
+
     // --- Ludo Handlers ---
     socket.on('ludo_create', (data) => {
         const roomId = data?.roomId || generateRoomId();
@@ -1406,20 +1524,86 @@ function handleEndCall(socketId) {
 function distributeLudoWinnings(game, ioRef) {
     if (game.winningsDistributed) return;
     game.winningsDistributed = true;
-    const winnerIdx = game.rankings[0];
-    if (winnerIdx !== undefined) {
-        const winner = game.players[winnerIdx];
-        if (!winner.isBot && db.users[winner.name]) {
-            const pot = game.betAmount * game.players.length;
-            db.users[winner.name].wallet += pot;
-            db.users[winner.name].history.unshift({ type: 'cash_in', amount: pot, reason: 'Ludo Win', date: new Date().toISOString() });
+
+    const numPlayers = game.players.length;
+    const betPerPlayer = game.betAmount || 0;
+    const totalPot = betPerPlayer * numPlayers;
+
+    // Default tiered prize structure as specified:
+    // 1st Place: 10,000 LKR (or 60% of pot if higher)
+    // 2nd Place: 5,000 LKR (or 25% of pot if higher)
+    // 3rd Place: 2,000 LKR (or 15% of pot if higher)
+    // 4th Place: 0 LKR (Lost)
+    const prizeTiers = [
+        Math.max(10000, Math.floor(totalPot * 0.60)),
+        Math.max(5000, Math.floor(totalPot * 0.25)),
+        Math.max(2000, Math.floor(totalPot * 0.15)),
+        0
+    ];
+
+    const resultsBreakdown = [];
+
+    // Distribute prizes according to rankings
+    game.rankings.forEach((playerIdx, rankOrder) => {
+        const player = game.players[playerIdx];
+        if (!player) return;
+
+        const prizeAmount = prizeTiers[rankOrder] || 0;
+        const rankTitle = rankOrder === 0 ? "1st Place Champion 🏆" :
+                          rankOrder === 1 ? "2nd Place Runner-Up 🥈" :
+                          rankOrder === 2 ? "3rd Place Finisher 🥉" : "4th Place (Defeated)";
+
+        resultsBreakdown.push({
+            rank: rankOrder + 1,
+            name: player.name,
+            avatar: player.avatar,
+            colorIdx: player.colorIdx,
+            prize: prizeAmount,
+            title: rankTitle
+        });
+
+        if (prizeAmount > 0 && !player.isBot && db.users[player.name]) {
+            db.users[player.name].wallet += prizeAmount;
+            if (!db.users[player.name].history) db.users[player.name].history = [];
+            db.users[player.name].history.unshift({
+                type: 'cash_in',
+                amount: prizeAmount,
+                reason: `Ludo ${rankTitle} (+${prizeAmount.toLocaleString()} LKR)`,
+                date: new Date().toISOString()
+            });
             saveDb();
-            ioRef.to(winner.sid || winner.socketId).emit('wallet_update', db.users[winner.name]);
-            if (pot > 0) {
-                ioRef.to(winner.sid || winner.socketId).emit('ludo_transaction', { type: 'credit', amount: pot, message: `${pot} LKR credited to your wallet!` });
+
+            const targetSocketId = player.sid || player.socketId;
+            if (targetSocketId) {
+                ioRef.to(targetSocketId).emit('wallet_update', db.users[player.name]);
+                ioRef.to(targetSocketId).emit('ludo_transaction', {
+                    type: 'credit',
+                    amount: prizeAmount,
+                    message: `🏆 Victory Prize! ${prizeAmount.toLocaleString()} LKR credited for ${rankTitle}!`
+                });
             }
         }
-    }
+    });
+
+    // Add unranked players as 4th place (lost)
+    game.players.forEach((player, pIdx) => {
+        if (!game.rankings.includes(pIdx)) {
+            resultsBreakdown.push({
+                rank: resultsBreakdown.length + 1,
+                name: player.name,
+                avatar: player.avatar,
+                colorIdx: player.colorIdx,
+                prize: 0,
+                title: "4th Place (Defeated)"
+            });
+        }
+    });
+
+    // Broadcast prize breakdown to room
+    ioRef.to(game.roomId).emit('ludo_game_prizes', {
+        roomId: game.roomId,
+        results: resultsBreakdown
+    });
 }
 
 function _triggerBotTurnIfNeeded(game) {

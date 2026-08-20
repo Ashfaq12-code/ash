@@ -1142,6 +1142,17 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
   const [communityLobbies, setCommunityLobbies] = useState<any[]>([]);
   const [myHostedRoom, setMyHostedRoom] = useState<string | null>(null);
 
+  // Real-Time P2P Money Transfer & Digital Receipt States
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [activeReceipt, setActiveReceipt] = useState<any>(null);
+  const [transferRecipient, setTransferRecipient] = useState("");
+  const [transferAmount, setTransferAmount] = useState<number | string>(1000);
+  const [transferNote, setTransferNote] = useState("");
+  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferError, setTransferError] = useState<string | null>(null);
+  const [registeredUsersList, setRegisteredUsersList] = useState<any[]>([]);
+
   // Scoped Nicknames & Archive/Delete controls
   const [nicknames, setNicknames] = useState<{ [key: string]: string }>(() => {
     if (typeof window !== 'undefined') {
@@ -1405,6 +1416,38 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
     socket.on('community_ludo_ready', (data: any) => {
       setSelectedLudoRoom(data.roomId);
       setActiveTab('survival');
+    });
+
+    // Socket listeners for Peer-to-Peer Real-Time Money Transfer & Digital Receipts
+    socket.on("transfer_success", (data: any) => {
+      setTransferLoading(false);
+      setShowTransferModal(false);
+      setActiveReceipt(data.receipt);
+      setShowReceiptModal(true);
+      try {
+        const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3");
+        audio.play().catch(() => {});
+      } catch (e) {}
+      setToast({ id: 'sys_transfer', name: "NEURAL BANK", text: data.message });
+    });
+
+    socket.on("transfer_received", (data: any) => {
+      setActiveReceipt(data.receipt);
+      setShowReceiptModal(true);
+      try {
+        const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3");
+        audio.play().catch(() => {});
+      } catch (e) {}
+      setToast({ id: 'sys_transfer_recv', name: "NEURAL BANK", text: `📥 Received ${data.receipt?.amount?.toLocaleString()} LKR from @${data.receipt?.sender}!` });
+    });
+
+    socket.on("transfer_error", (data: any) => {
+      setTransferLoading(false);
+      setTransferError(data.message);
+    });
+
+    socket.on("registered_users_list", (users: any[]) => {
+      setRegisteredUsersList(users);
     });
 
     // Fetch any already-open lobbies on mount
@@ -1822,7 +1865,22 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
         {activeTab === 'directory' && <OnlineUsersDirectory onlineUsers={onlineUsers} onCall={startCall} onChat={(id) => { setSelectedChatId(id); setActiveTab('chat'); }} />}
         {activeTab === 'calls' && <CallLogsPage callLogs={callLogs} onCall={startCall} username={username} onlineUsers={onlineUsers} />}
         {activeTab === 'admin' && <AdminPlaceholder stats={systemStats} />}
-        {activeTab === 'wallet' && <WalletPage walletInfo={walletInfo} username={username} />}
+        {activeTab === 'wallet' && (
+          <WalletPage 
+            walletInfo={walletInfo} 
+            username={username} 
+            onOpenTransfer={(prefillUser?: string) => {
+              if (prefillUser) setTransferRecipient(prefillUser);
+              setTransferError(null);
+              socket?.emit("get_registered_users");
+              setShowTransferModal(true);
+            }}
+            onSelectReceipt={(receipt: any) => {
+              setActiveReceipt(receipt);
+              setShowReceiptModal(true);
+            }}
+          />
+        )}
         {activeTab === 'profile' && (
           <ProfilePage
             username={username}
@@ -2082,6 +2140,25 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
             )
           )}
         </AnimatePresence>
+
+        {/* Real-Time P2P Money Transfer Modal Overlay */}
+        <TransferModal
+          isOpen={showTransferModal}
+          onClose={() => setShowTransferModal(false)}
+          socket={socket}
+          username={username}
+          walletBalance={walletInfo?.wallet || 0}
+          registeredUsers={registeredUsersList}
+          defaultRecipient={transferRecipient}
+          loading={transferLoading}
+          error={transferError}
+        />
+
+        {/* Digital Receipt Modal Overlay */}
+        <DigitalReceiptModal
+          receipt={activeReceipt}
+          onClose={() => setShowReceiptModal(false)}
+        />
       </main>
     </div>
   );
@@ -4267,9 +4344,9 @@ function VideoCallInterface({ socket, activeCall, myUsername, onEnd }: any) {
 }
 
 
-function WalletPage({ walletInfo, username }: { walletInfo: any, username: string }) {
-  const totalIn = walletInfo.history?.filter((h: any) => h.type === 'cash_in').reduce((acc: number, h: any) => acc + h.amount, 0) || 0;
-  const totalOut = walletInfo.history?.filter((h: any) => h.type === 'cash_out').reduce((acc: number, h: any) => acc + h.amount, 0) || 0;
+function WalletPage({ walletInfo, username, onOpenTransfer, onSelectReceipt }: { walletInfo: any, username: string, onOpenTransfer?: (prefillUser?: string) => void, onSelectReceipt?: (receipt: any) => void }) {
+  const totalIn = walletInfo.history?.filter((h: any) => h.type === 'cash_in').reduce((acc: number, h: any) => acc + (h.amount || 0), 0) || 0;
+  const totalOut = walletInfo.history?.filter((h: any) => h.type === 'cash_out').reduce((acc: number, h: any) => acc + (h.amount || 0), 0) || 0;
 
   return (
     <div className="flex-1 bg-[#050810] h-full overflow-y-auto p-8 relative">
@@ -4279,10 +4356,16 @@ function WalletPage({ walletInfo, username }: { walletInfo: any, username: strin
         <div className="flex justify-between items-center mb-10">
           <div>
             <h1 className="text-4xl font-black text-white tracking-widest uppercase mb-2">Neural Wallet</h1>
-            <p className="text-emerald-400 font-mono text-sm tracking-widest">Global Encryption Network</p>
+            <p className="text-emerald-400 font-mono text-sm tracking-widest">Real-Time P2P Transit Network</p>
           </div>
           <div className="flex gap-4">
-            <button className="px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all text-sm flex items-center gap-2 border border-white/10">
+            <button 
+              onClick={() => onOpenTransfer && onOpenTransfer()}
+              className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-black rounded-xl transition-all text-sm flex items-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.4)] uppercase tracking-widest"
+            >
+              <Send className="w-4 h-4" /> REALTIME TRANSFER
+            </button>
+            <button className="px-6 py-3 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all text-sm flex items-center gap-2 border border-white/10 text-white">
               <Zap className="w-4 h-4 text-amber-400" /> BUY LKR
             </button>
           </div>
@@ -4306,12 +4389,12 @@ function WalletPage({ walletInfo, username }: { walletInfo: any, username: strin
 
             <div className="flex gap-8 bg-black/40 backdrop-blur-md p-6 rounded-2xl border border-white/5">
               <div>
-                <p className="text-gray-500 text-xs font-mono uppercase mb-1">Total Winnings</p>
+                <p className="text-gray-500 text-xs font-mono uppercase mb-1">Total Received / Won</p>
                 <p className="text-emerald-400 font-black text-xl">+{totalIn.toLocaleString()}</p>
               </div>
               <div className="w-px bg-white/10"></div>
               <div>
-                <p className="text-gray-500 text-xs font-mono uppercase mb-1">Total Bets Placed</p>
+                <p className="text-gray-500 text-xs font-mono uppercase mb-1">Total Sent / Placed</p>
                 <p className="text-red-400 font-black text-xl">-{totalOut.toLocaleString()}</p>
               </div>
             </div>
@@ -4320,27 +4403,53 @@ function WalletPage({ walletInfo, username }: { walletInfo: any, username: strin
 
         {/* History Section */}
         <div>
-          <h2 className="text-xl font-bold text-white mb-6 uppercase tracking-widest border-b border-white/10 pb-4">Transaction History</h2>
+          <div className="flex justify-between items-center mb-6 border-b border-white/10 pb-4">
+            <h2 className="text-xl font-bold text-white uppercase tracking-widest">Transaction & Cashout History</h2>
+            <p className="text-xs text-gray-400 font-mono">Click any transaction to inspect Digital Receipt</p>
+          </div>
           <div className="space-y-4">
             {walletInfo.history?.length > 0 ? (
-              walletInfo.history.slice().reverse().map((h: any, i: number) => (
-                <div key={i} className="bg-[#0c1222] border border-white/5 rounded-2xl p-6 flex justify-between items-center hover:border-white/10 transition-all group">
-                  <div className="flex items-center gap-4">
-                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${h.type === 'cash_in' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-                      <Wallet className="w-6 h-6" />
+              walletInfo.history.map((h: any, i: number) => {
+                const isCashIn = h.type === 'cash_in';
+                const receiptObj = {
+                  txnId: h.txnId || `TXN-${i}-${Date.now().toString(36).toUpperCase()}`,
+                  sender: h.sender || (isCashIn ? 'SYSTEM / GAME' : username),
+                  recipient: h.recipient || (isCashIn ? username : 'RECIPIENT'),
+                  amount: h.amount,
+                  note: h.reason || h.note || 'Neural Wallet Transaction',
+                  date: h.date || new Date().toISOString(),
+                  status: h.status || 'COMPLETED'
+                };
+                return (
+                  <div 
+                    key={i} 
+                    onClick={() => onSelectReceipt && onSelectReceipt(receiptObj)}
+                    className="bg-[#0c1222] border border-white/5 rounded-2xl p-6 flex justify-between items-center hover:border-emerald-500/40 hover:bg-[#10192d] cursor-pointer transition-all group shadow-md"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${isCashIn ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+                        {h.txnId ? <Receipt className="w-6 h-6" /> : <Wallet className="w-6 h-6" />}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-white font-bold text-lg">{h.reason}</p>
+                          {h.txnId && <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono px-2 py-0.5 rounded-full uppercase">P2P RECEIPT</span>}
+                        </div>
+                        <p className="text-gray-500 font-mono text-xs">{new Date(h.date || Date.now()).toLocaleDateString()} at {new Date(h.date || Date.now()).toLocaleTimeString()}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-white font-bold text-lg mb-1">{h.reason}</p>
-                      <p className="text-gray-500 font-mono text-xs">{new Date(h.date).toLocaleDateString()} at {new Date(h.date).toLocaleTimeString()}</p>
+                    <div className="text-right flex items-center gap-4">
+                      <div>
+                        <p className={`font-black text-2xl ${isCashIn ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {isCashIn ? '+' : '-'}{(h.amount || 0).toLocaleString()} LKR
+                        </p>
+                        <p className="text-gray-500 text-[10px] font-mono group-hover:text-emerald-400 transition-colors uppercase">Click for Receipt 🧾</p>
+                      </div>
+                      <ChevronRight className="w-5 h-5 text-gray-600 group-hover:text-white transition-colors" />
                     </div>
                   </div>
-                  <div className="text-right">
-                    <p className={`font-black text-2xl ${h.type === 'cash_in' ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {h.type === 'cash_in' ? '+' : '-'}{h.amount.toLocaleString()} LKR
-                    </p>
-                  </div>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-3xl">
                 <Wallet className="w-16 h-16 text-gray-700 mx-auto mb-4" />
@@ -4350,6 +4459,246 @@ function WalletPage({ walletInfo, username }: { walletInfo: any, username: strin
           </div>
         </div>
 
+      </div>
+    </div>
+  );
+}
+
+function TransferModal({
+  isOpen,
+  onClose,
+  socket,
+  username,
+  walletBalance,
+  registeredUsers,
+  defaultRecipient,
+  loading,
+  error
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  socket: Socket | null;
+  username: string;
+  walletBalance: number;
+  registeredUsers: any[];
+  defaultRecipient?: string;
+  loading: boolean;
+  error: string | null;
+}) {
+  const [recipient, setRecipient] = useState(defaultRecipient || "");
+  const [amount, setAmount] = useState<number | string>(1000);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    if (defaultRecipient) setRecipient(defaultRecipient);
+  }, [defaultRecipient]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!socket) return;
+    socket.emit("transfer_wallet_funds", {
+      recipientUsername: recipient,
+      amount: typeof amount === "string" ? parseFloat(amount) : amount,
+      note: note
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/85 backdrop-blur-xl z-[150] flex items-center justify-center p-4">
+      <div className="bg-[#0c1222] border border-emerald-500/30 rounded-3xl w-full max-w-lg p-8 shadow-[0_0_60px_rgba(16,185,129,0.2)] relative overflow-hidden">
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 flex items-center justify-center border border-emerald-500/30 text-emerald-400">
+              <Send className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-white uppercase tracking-widest">Realtime Money Transfer</h2>
+              <p className="text-emerald-400 font-mono text-xs">Direct P2P Neural Transit</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 bg-white/5 rounded-full hover:bg-white/10 transition-all text-gray-400 hover:text-white">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-6 bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-mono p-4 rounded-2xl flex items-center gap-3">
+            <Zap className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="bg-[#050810] border border-white/5 rounded-2xl p-4 flex justify-between items-center">
+            <span className="text-gray-400 text-xs font-mono uppercase">Your Available Balance</span>
+            <span className="text-emerald-400 font-black font-mono text-lg">{walletBalance?.toLocaleString()} LKR</span>
+          </div>
+
+          <div>
+            <label className="block text-gray-400 text-xs font-mono uppercase mb-2">Recipient Username</label>
+            <input
+              type="text"
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value)}
+              placeholder="e.g. ash002"
+              className="w-full bg-[#050810] border border-white/10 rounded-2xl px-5 py-4 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-all"
+              required
+            />
+            {registeredUsers && registeredUsers.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className="text-[10px] text-gray-500 font-mono py-1">Quick Select:</span>
+                {registeredUsers.filter(u => u.username !== username).slice(0, 5).map(u => (
+                  <button
+                    key={u.username}
+                    type="button"
+                    onClick={() => setRecipient(u.username)}
+                    className="text-[11px] bg-white/5 hover:bg-emerald-500/20 text-emerald-300 border border-white/10 hover:border-emerald-500/40 px-3 py-1 rounded-full font-mono transition-all"
+                  >
+                    @{u.username}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-gray-400 text-xs font-mono uppercase mb-2">Transfer Amount (LKR)</label>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="Enter LKR amount"
+              min="1"
+              max={walletBalance}
+              className="w-full bg-[#050810] border border-white/10 rounded-2xl px-5 py-4 text-emerald-400 font-black font-mono text-xl focus:outline-none focus:border-emerald-500 transition-all mb-3"
+              required
+            />
+            <div className="flex gap-2">
+              {[1000, 2000, 5000, 10000, 50000].map((amt) => (
+                <button
+                  key={amt}
+                  type="button"
+                  onClick={() => setAmount(amt)}
+                  className="flex-1 py-2 bg-white/5 hover:bg-emerald-500/20 text-emerald-400 border border-white/10 hover:border-emerald-500/40 rounded-xl text-xs font-mono font-bold transition-all"
+                >
+                  +{amt.toLocaleString()}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-gray-400 text-xs font-mono uppercase mb-2">Reference Memo / Note</label>
+            <input
+              type="text"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. Ludo game bet fund / Friend gift"
+              className="w-full bg-[#050810] border border-white/10 rounded-2xl px-5 py-4 text-white text-sm focus:outline-none focus:border-emerald-500 transition-all"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-lg rounded-2xl transition-all shadow-[0_0_30px_rgba(16,185,129,0.4)] uppercase tracking-widest flex items-center justify-center gap-2"
+          >
+            {loading ? (
+              <span className="animate-pulse">PROCESSING TRANSIT...</span>
+            ) : (
+              <>
+                <Send className="w-5 h-5" /> SEND LKR IN REALTIME
+              </>
+            )}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function DigitalReceiptModal({
+  receipt,
+  onClose
+}: {
+  receipt: any;
+  onClose: () => void;
+}) {
+  if (!receipt) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/90 backdrop-blur-2xl z-[160] flex items-center justify-center p-4">
+      <div className="bg-[#080d18] border-2 border-emerald-500/50 rounded-3xl w-full max-w-md p-8 shadow-[0_0_80px_rgba(16,185,129,0.3)] relative overflow-hidden text-white font-sans">
+        <div className="text-center mb-6 border-b border-white/10 pb-6">
+          <div className="w-16 h-16 bg-emerald-500/10 border border-emerald-500/40 rounded-full flex items-center justify-center mx-auto mb-3 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]">
+            <CheckCircle2 className="w-10 h-10 animate-bounce" />
+          </div>
+          <h2 className="text-2xl font-black uppercase tracking-widest text-white">Neural Transit Receipt</h2>
+          <p className="text-emerald-400 font-mono text-xs uppercase tracking-[0.2em]">Verified Blockchain Ledger</p>
+        </div>
+
+        <div className="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 border border-emerald-500/30 rounded-2xl p-6 text-center mb-6">
+          <p className="text-gray-400 text-xs font-mono uppercase mb-1">Total Transferred</p>
+          <p className="text-5xl font-black text-emerald-400 tracking-tight font-mono">{(receipt.amount || 0).toLocaleString()} <span className="text-lg">LKR</span></p>
+          <div className="mt-3 inline-flex items-center gap-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-mono px-3 py-1 rounded-full uppercase tracking-widest">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+            {receipt.status || 'SUCCESS'}
+          </div>
+        </div>
+
+        <div className="space-y-4 bg-[#04070f] p-5 rounded-2xl border border-white/5 font-mono text-xs mb-6">
+          <div className="flex justify-between items-center border-b border-white/5 pb-2">
+            <span className="text-gray-500 uppercase">Transaction ID</span>
+            <span className="text-amber-400 font-bold tracking-wider">{receipt.txnId}</span>
+          </div>
+
+          <div className="flex justify-between items-center border-b border-white/5 pb-2">
+            <span className="text-gray-500 uppercase">Sender Node</span>
+            <span className="text-white font-bold">@{receipt.sender}</span>
+          </div>
+
+          <div className="flex justify-between items-center border-b border-white/5 pb-2">
+            <span className="text-gray-500 uppercase">Recipient Node</span>
+            <span className="text-emerald-400 font-bold">@{receipt.recipient}</span>
+          </div>
+
+          <div className="flex justify-between items-center border-b border-white/5 pb-2">
+            <span className="text-gray-500 uppercase">Date & Time</span>
+            <span className="text-gray-300">{new Date(receipt.date || Date.now()).toLocaleString()}</span>
+          </div>
+
+          <div className="flex justify-between items-start">
+            <span className="text-gray-500 uppercase">Reference Memo</span>
+            <span className="text-gray-300 font-sans max-w-[180px] text-right font-medium">{receipt.note || 'Neural Wallet Transit'}</span>
+          </div>
+        </div>
+
+        <div className="border border-dashed border-white/10 rounded-2xl p-4 flex items-center justify-between bg-black/30 mb-6">
+          <div>
+            <p className="text-[10px] text-gray-500 font-mono uppercase tracking-widest">Security Stamp</p>
+            <p className="text-[11px] text-emerald-500/80 font-mono">NEURAL-FIN-SEC-v3.0</p>
+          </div>
+          <div className="w-12 h-12 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center text-gray-500 text-xs font-mono font-bold tracking-tighter">
+            [QR]
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => window.print()}
+            className="flex-1 py-4 bg-white/5 hover:bg-white/10 text-white font-bold text-xs rounded-xl border border-white/10 uppercase tracking-widest flex items-center justify-center gap-2 transition-all"
+          >
+            <Receipt className="w-4 h-4" /> Save / Print
+          </button>
+          <button
+            onClick={onClose}
+            className="flex-1 py-4 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs rounded-xl uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+          >
+            Done
+          </button>
+        </div>
       </div>
     </div>
   );
