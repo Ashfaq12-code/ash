@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ScanFace, Terminal, ShieldAlert, ShieldCheck, Cpu, Video, Phone, Users, LayoutDashboard, Settings, MoreVertical, MessageSquare, Lock, PhoneCall, X, Image as ImageIcon, Smile, User, Gamepad2, Swords, Zap, Wallet, UserPlus, LogOut, ChevronLeft, ChevronDown, Eye, EyeOff, Info, Pencil, Check, Sparkles, Archive, Trash, ArrowLeft, Compass, HelpCircle, BookOpen, MessageCircle } from "lucide-react";
+import { Send, ScanFace, Terminal, ShieldAlert, ShieldCheck, Cpu, Video, Phone, Users, LayoutDashboard, Settings, MoreVertical, MessageSquare, Lock, PhoneCall, X, Image as ImageIcon, Smile, User, Gamepad2, Swords, Zap, Wallet, UserPlus, LogOut, ChevronLeft, ChevronRight, ChevronDown, Eye, EyeOff, Info, Pencil, Check, Sparkles, Archive, Trash, ArrowLeft, Compass, HelpCircle, BookOpen, MessageCircle, CheckCircle2, Receipt } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 import CryptoJS from 'crypto-js';
 import Peer from 'simple-peer';
