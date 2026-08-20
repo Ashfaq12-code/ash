@@ -1,0 +1,39 @@
+Client-side Image Compression: Uploaded profile photos and shared images in chat will be compressed on the fly (via a canvas-based resizer) to under 15KB. This ensures socket messages are tiny, lightweight, and never exceed Socket.io's default 1MB limits.
+E2EE WebRTC Calls: Real WebRTC audio/video call connections will be established using the simple-peer library. Socket.io on the server will act purely as the signaling server relaying offers, answers, and ICE signals.
+Call History Recording: The call duration is calculated on the server and saved permanently to database.json. It will show up in the chat window of both accounts (e.g. 📞 Call ended · 3m 14s) in real-time when a call ends.
+Proposed Changes
+1. Scoped Chat Wallpaper Persistence
+Locations: client/src/app/page.tsx
+Goal: Replace socket IDs (targetId) with usernames (targetName) in localStorage keys to prevent wallpapers resetting on reconnect.
+Change Details:
+Update keySuffix inside useEffect to use ${username}_${targetName || targetId || 'global'}.
+Update all localStorage.setItem and localStorage.getItem statements for wallpaper type, opacity, brightness, and contrast to use the persistent targetName instead of targetId.
+2. Client-Side Image Compression & DP Propagation
+Locations: client/src/app/page.tsx and server/index.js
+Goal: Compress image uploads to prevent socket payload errors and fix incorrect client avatar property mapping.
+Change Details:
+Client:
+Introduce a helper compressImage(dataUrl, maxWidth, maxHeight, quality) using an HTML5 Canvas to resize images before saving/sending.
+Profile picture uploads will be resized to a maximum of 128x128 pixels (JPEG quality 0.7), resulting in small (~10-15KB) Base64 strings.
+Chat media image uploads will be resized to a maximum of 600x600 pixels (JPEG quality 0.6).
+Update all avatar <img> tags on the client to render user.avatar instead of checking the username string for Base64 headers. Look up the avatar using the user's username within onlineUsers dynamically for fallback rendering (e.g. inside ChatListItem, headers, messages, and lobby lists).
+Server:
+Ensure broadcastUsers correctly extracts and transmits the updated avatar property of active users from the JSON database records in db.users.
+3. WebRTC Call Signaling (Server)
+Locations: server/index.js
+Goal: Add WebRTC signaling event handlers to enable peer connections between real accounts.
+Change Details:
+Create socket event handler call_user: Relays the WebRTC offer signal to the target user socket ID.
+Create socket event handler answer_call: Relays the WebRTC answer signal to the caller's socket ID.
+Maintain a global ongoingCalls map on the server tracking call start times, callers, and receivers.
+Add call duration tracking when answer_call is triggered.
+4. Call History Logs & End Call Messages
+Locations: server/index.js & client/src/app/page.tsx
+Goal: Auto-inject system messages into chat history when calls end, indicating speech duration (e.g. 📞 Call ended · 2m 14s) or missed status.
+Change Details:
+Server:
+When end_call or socket disconnect fires, retrieve the call from ongoingCalls.
+If established, calculate duration (minutes and seconds) and construct message text (e.g. 📞 Call ended · 3m 24s).
+If never established (missed/declined), construct text 📞 Missed voice call.
+Create a system message object with isSystem: true and push it to db.messages. Save the database and emit receive_message to both parties.
+Send call_ended socket event to the peer socket to tear down the peer connection UI.   ok i rewied contuie the process

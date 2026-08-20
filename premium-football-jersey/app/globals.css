@@ -1,0 +1,156 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Bebas+Neue&display=swap');
+
+@import "tailwindcss";
+
+@theme {
+  --font-plus-jakarta: "Plus Jakarta Sans", sans-serif;
+  --font-bebas: "Bebas Neue", sans-serif;
+}
+
+:root {
+  --primary-green: #0f5231;
+  --dark-green: #0d3a22;
+  --accent-green: #2ecc71;
+  --body-bg: #ffffff;
+  --section-bg-light: #f9f9f9;
+  --dark-section: #18181c;
+  --border-light: rgba(0, 0, 0, 0.08);
+  --border-dark: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--body-bg);
+  color: #1a1a1a;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom fonts */
+.font-bebas {
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 0.05em;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--primary-green);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dark-green);
+}
+
+/* Header & Banner Styles */
+.bg-grass-green {
+  background-color: var(--primary-green);
+}
+
+.bg-dark-green {
+  background-color: var(--dark-green);
+}
+
+.border-grass-green {
+  border-color: var(--primary-green);
+}
+
+/* Category card overlay */
+.category-overlay {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.2) 60%, transparent 100%);
+}
+
+/* Hero Panel Slider styles */
+.hero-panel {
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  filter: grayscale(20%);
+}
+.hero-panel:hover {
+  filter: grayscale(0%);
+  transform: translateY(-8px);
+}
+
+/* Jersey card */
+.product-card {
+  transition: all 0.3s ease;
+  border: 1px solid var(--border-light);
+}
+.product-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 15px 30px rgba(0,0,0,0.08);
+  border-color: rgba(15, 82, 49, 0.2);
+}
+
+/* Image wrappers */
+.img-zoom {
+  overflow: hidden;
+}
+.img-zoom img {
+  transition: transform 0.5s ease;
+}
+.img-zoom:hover img {
+  transform: scale(1.08);
+}
+
+/* Custom buttons */
+.btn-green-fill {
+  background-color: var(--primary-green);
+  color: #ffffff;
+  font-weight: 700;
+  transition: all 0.3s ease;
+}
+.btn-green-fill:hover {
+  background-color: var(--dark-green);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(15, 82, 49, 0.25);
+}
+
+.btn-green-outline {
+  border: 2px solid var(--primary-green);
+  color: var(--primary-green);
+  font-weight: 700;
+  transition: all 0.3s ease;
+}
+.btn-green-outline:hover {
+  background-color: var(--primary-green);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+/* Ticker styles */
+@keyframes ticker {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.ticker-wrap {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.ticker-content {
+  display: inline-block;
+  animation: ticker 25s linear infinite;
+}
+
+/* Accordion transition helper */
+.accordion-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s cubic-bezier(0, 1, 0, 1);
+}
+.accordion-content.open {
+  max-height: 1000px;
+  transition: max-height 0.5s cubic-bezier(1, 0, 1, 0);
+}

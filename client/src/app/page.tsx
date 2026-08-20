@@ -100,11 +100,17 @@ export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connectedUrl, setConnectedUrl] = useState<string>("");
   const [isAutoAuthenticating, setIsAutoAuthenticating] = useState(true);
+  const [socketUrlOverride, setSocketUrlOverride] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("aura_socket_url") || "";
+    }
+    return "";
+  });
 
   useEffect(() => {
     // Dynamically connect to the backend socket server.
     // In production, use NEXT_PUBLIC_SOCKET_URL from environment variables.
-    let socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "";
+    let socketUrl = socketUrlOverride || process.env.NEXT_PUBLIC_SOCKET_URL || "";
     
     // Clean and sanitize the URL (trim whitespace, remove quotes, strip trailing slash)
     socketUrl = socketUrl.trim().replace(/^['"]|['"]$/g, "");
@@ -122,9 +128,9 @@ export default function App() {
     // If socketUrl is empty, or points to localtunnel (loca.lt) in production
     // (since localtunnel's abuse interstitial fails in standard cross-origin browser requests),
     // default to the reliable, active Railway backend.
-    if (!socketUrl || (socketUrl.includes("loca.lt") && !isLocalhost)) {
+    if (!socketUrl || (socketUrl.includes("loca.lt") && !isLocalhost && !socketUrlOverride)) {
       if (!isLocalhost) {
-        socketUrl = "https://virtuous-expression-production.up.railway.app";
+        socketUrl = "https://as-production-14d0.up.railway.app";
       } else {
         socketUrl = "http://localhost:5000";
       }
@@ -202,7 +208,7 @@ export default function App() {
       newSocket.off("auth_success", onAuthSuccess);
       newSocket.close();
     };
-  }, []);
+  }, [socketUrlOverride]);
 
   const handleAuth = (name: string, avatar?: string, userAbout?: string, userShowLastSeen?: boolean) => {
     setUsername(name);
@@ -237,7 +243,18 @@ export default function App() {
     <div className="bg-[#0b0f19] text-white font-sans overflow-x-hidden overflow-y-auto min-h-screen w-full selection:bg-emerald-500/30">
       <AnimatePresence mode="wait">
         {!isAuthenticated ? (
-          <BiometricLogin key="login" socket={socket} connectedUrl={connectedUrl} onAuth={handleAuth} onGuest={handleGuestExplore} />
+          <BiometricLogin
+            key="login"
+            socket={socket}
+            connectedUrl={connectedUrl}
+            onAuth={handleAuth}
+            onGuest={handleGuestExplore}
+            socketUrlOverride={socketUrlOverride}
+            onUpdateSocketUrl={(url) => {
+              localStorage.setItem("aura_socket_url", url);
+              setSocketUrlOverride(url);
+            }}
+          />
         ) : (
           <MainDashboard key="dashboard" socket={socket} username={username} setUsername={setUsername} avatarSeed={avatarSeed} setAvatarSeed={setAvatarSeed} about={about} setAbout={setAbout} showLastSeen={showLastSeen} setShowLastSeen={setShowLastSeen} isGuest={isGuest} setIsGuest={setIsGuest} onLogOut={() => { setIsAuthenticated(false); setIsGuest(false); localStorage.removeItem("aura_username"); }} />
         )}
@@ -246,8 +263,28 @@ export default function App() {
   );
 }
 
-function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Socket | null, connectedUrl: string, onAuth: (name: string, avatar?: string, userAbout?: string, userShowLastSeen?: boolean) => void, onGuest: () => void }) {
+function BiometricLogin({
+  socket,
+  connectedUrl,
+  onAuth,
+  onGuest,
+  socketUrlOverride,
+  onUpdateSocketUrl
+}: {
+  socket: Socket | null;
+  connectedUrl: string;
+  onAuth: (name: string, avatar?: string, userAbout?: string, userShowLastSeen?: boolean) => void;
+  onGuest: () => void;
+  socketUrlOverride: string;
+  onUpdateSocketUrl: (url: string) => void;
+}) {
   const [loginMode, setLoginMode] = useState<"face" | "clap" | "credentials">("face");
+  const [showServerConfig, setShowServerConfig] = useState(false);
+  const [tempSocketUrl, setTempSocketUrl] = useState(socketUrlOverride);
+
+  useEffect(() => {
+    setTempSocketUrl(socketUrlOverride);
+  }, [socketUrlOverride]);
 
   // Credentials State
   const [credUsername, setCredUsername] = useState("");
@@ -684,106 +721,182 @@ function BiometricLogin({ socket, connectedUrl, onAuth, onGuest }: { socket: Soc
             animate={{ opacity: 1, scale: 1 }}
             className="w-[90%] max-w-[380px] bg-[#0c1222]/95 border border-purple-500/30 p-5 md:p-8 rounded-3xl shadow-[0_0_50px_rgba(168,85,247,0.15)] backdrop-blur-md z-10 flex flex-col gap-3 md:gap-4 text-left"
           >
-            <div>
-              <label className="block text-[10px] font-mono uppercase tracking-[0.25em] text-purple-400 mb-2 font-bold">SECURE USERNAME</label>
-              <input
-                type="text"
-                value={credUsername}
-                onChange={(e) => setCredUsername(e.target.value)}
-                onKeyDown={handleKeyDown}
-                className="w-full bg-[#050810] border border-purple-500/20 focus:border-purple-500 rounded-xl px-4 py-3 text-white text-sm font-mono focus:outline-none transition-all"
-                placeholder="Enter your username..."
-                autoComplete="username"
-              />
-            </div>
-
-            <div className="relative">
-              <label className="block text-[10px] font-mono uppercase tracking-[0.25em] text-purple-400 mb-2 font-bold">SECURITY ACCESS KEY</label>
-              <div className="relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  value={credPassword}
-                  onChange={(e) => setCredPassword(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  className="w-full bg-[#050810] border border-purple-500/20 focus:border-purple-500 rounded-xl pl-4 pr-12 py-3 text-white text-sm font-mono focus:outline-none transition-all"
-                  placeholder="Enter your password..."
-                  autoComplete="current-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-purple-400 transition-all"
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-
-              {/* Dynamic 3 strength lines */}
-              <div className="flex gap-2 mt-3 w-full">
-                <div className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${getPasswordStrength(credPassword) >= 1 ? (getPasswordStrength(credPassword) === 3 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : getPasswordStrength(credPassword) === 2 ? 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]') : 'bg-white/10'}`} />
-                <div className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${getPasswordStrength(credPassword) >= 2 ? (getPasswordStrength(credPassword) === 3 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : getPasswordStrength(credPassword) === 2 ? 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'bg-white/10') : 'bg-white/10'}`} />
-                <div className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${getPasswordStrength(credPassword) >= 3 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-white/10'}`} />
-              </div>
-
-              <div className="flex justify-between items-center mt-2">
-                <p className="text-[9px] font-mono text-gray-500 uppercase tracking-widest">
-                  {getPasswordStrength(credPassword) === 3 ? "🔒 strong (verified)" : "⚠️ weak key option"}
-                </p>
-                {getPasswordStrength(credPassword) === 3 && (
-                  <p className="text-[9px] font-mono text-emerald-400 uppercase tracking-wider animate-pulse">
-                    READY FOR ACCESS
+            {showServerConfig ? (
+              <div className="flex flex-col gap-4">
+                <div>
+                  <h3 className="text-[11px] font-mono uppercase tracking-[0.2em] text-cyan-400 font-bold mb-1">
+                    🌐 GATEWAY CONFIGURATION
+                  </h3>
+                  <p className="text-[9px] font-mono text-gray-500 uppercase tracking-wider mb-2 leading-relaxed">
+                    Set a custom Socket.io server URL below.
                   </p>
+                </div>
+
+                <div>
+                  <label className="block text-[9px] font-mono uppercase tracking-[0.25em] text-cyan-400 mb-2 font-bold">
+                    TARGET ROUTE ORIGIN
+                  </label>
+                  <input
+                    type="text"
+                    value={tempSocketUrl}
+                    onChange={(e) => setTempSocketUrl(e.target.value)}
+                    className="w-full bg-[#050810] border border-cyan-500/20 focus:border-cyan-500 rounded-xl px-4 py-3 text-white text-xs font-mono focus:outline-none transition-all"
+                    placeholder="e.g. http://localhost:5000"
+                  />
+                </div>
+
+                <div className="text-[9px] font-mono text-gray-600 bg-black/40 border border-white/5 p-3 rounded-xl leading-normal">
+                  <div className="text-gray-500 mb-1">CURRENT ACTIVE CONNECTION:</div>
+                  <div className="text-purple-400 break-all">{connectedUrl || "Determining automatically..."}</div>
+                </div>
+
+                <div className="flex flex-col gap-2 mt-2">
+                  <button
+                    onClick={() => {
+                      onUpdateSocketUrl(tempSocketUrl.trim());
+                      setShowServerConfig(false);
+                    }}
+                    className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 active:scale-95 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all border border-cyan-500/50 shadow-[0_0_20px_rgba(34,211,238,0.2)]"
+                  >
+                    💾 APPLY GATEWAY
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setTempSocketUrl("");
+                      onUpdateSocketUrl("");
+                      setShowServerConfig(false);
+                    }}
+                    className="w-full py-2 bg-transparent hover:bg-white/5 text-gray-400 hover:text-white font-bold text-[9px] uppercase tracking-widest rounded-xl transition-all border border-white/10"
+                  >
+                    🔄 RESTORE DEFAULT HOST
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setTempSocketUrl(socketUrlOverride);
+                      setShowServerConfig(false);
+                    }}
+                    className="w-full py-2 bg-transparent hover:bg-white/5 text-purple-400 hover:text-purple-300 font-bold text-[9px] uppercase tracking-widest rounded-xl transition-all"
+                  >
+                    CANCEL
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-[10px] font-mono uppercase tracking-[0.25em] text-purple-400 mb-2 font-bold">SECURE USERNAME</label>
+                  <input
+                    type="text"
+                    value={credUsername}
+                    onChange={(e) => setCredUsername(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    className="w-full bg-[#050810] border border-purple-500/20 focus:border-purple-500 rounded-xl px-4 py-3 text-white text-sm font-mono focus:outline-none transition-all"
+                    placeholder="Enter your username..."
+                    autoComplete="username"
+                  />
+                </div>
+
+                <div className="relative">
+                  <label className="block text-[10px] font-mono uppercase tracking-[0.25em] text-purple-400 mb-2 font-bold">SECURITY ACCESS KEY</label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={credPassword}
+                      onChange={(e) => setCredPassword(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      className="w-full bg-[#050810] border border-purple-500/20 focus:border-purple-500 rounded-xl pl-4 pr-12 py-3 text-white text-sm font-mono focus:outline-none transition-all"
+                      placeholder="Enter your password..."
+                      autoComplete="current-password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-purple-400 transition-all"
+                    >
+                      {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                    </button>
+                  </div>
+
+                  {/* Dynamic 3 strength lines */}
+                  <div className="flex gap-2 mt-3 w-full">
+                    <div className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${getPasswordStrength(credPassword) >= 1 ? (getPasswordStrength(credPassword) === 3 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : getPasswordStrength(credPassword) === 2 ? 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]') : 'bg-white/10'}`} />
+                    <div className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${getPasswordStrength(credPassword) >= 2 ? (getPasswordStrength(credPassword) === 3 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : getPasswordStrength(credPassword) === 2 ? 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'bg-white/10') : 'bg-white/10'}`} />
+                    <div className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${getPasswordStrength(credPassword) >= 3 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-white/10'}`} />
+                  </div>
+
+                  <div className="flex justify-between items-center mt-2">
+                    <p className="text-[9px] font-mono text-gray-500 uppercase tracking-widest">
+                      {getPasswordStrength(credPassword) === 3 ? "🔒 strong (verified)" : "⚠️ weak key option"}
+                    </p>
+                    {getPasswordStrength(credPassword) === 3 && (
+                      <p className="text-[9px] font-mono text-emerald-400 uppercase tracking-wider animate-pulse">
+                        READY FOR ACCESS
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {errorMessage && (
+                  <div className="text-red-400 font-mono text-center text-[10px] bg-red-500/10 border border-red-500/20 py-2 rounded-xl uppercase tracking-wider">
+                    {errorMessage}
+                  </div>
                 )}
-              </div>
-            </div>
 
-            {errorMessage && (
-              <div className="text-red-400 font-mono text-center text-[10px] bg-red-500/10 border border-red-500/20 py-2 rounded-xl uppercase tracking-wider">
-                {errorMessage}
-              </div>
+                <div className="flex flex-col gap-2 mt-2">
+                  {/* LOGIN - works with any password */}
+                  <button
+                    onClick={handleLogin}
+                    disabled={isSubmitting || isRegistering || !credUsername.trim() || !credPassword.trim()}
+                    className="w-full py-3 bg-purple-600 hover:bg-purple-500 active:scale-95 disabled:bg-purple-900/20 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all border border-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.2)]"
+                  >
+                    {isSubmitting ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" />
+                        LOGGING IN...
+                      </span>
+                    ) : "🔑 LOGIN"}
+                  </button>
+
+                  {/* REGISTER - requires strong password */}
+                  <button
+                    onClick={handleRegister}
+                    disabled={isSubmitting || isRegistering || !credUsername.trim() || !credPassword.trim()}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 active:scale-95 disabled:bg-emerald-950/20 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.2)]"
+                  >
+                    {isRegistering ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" />
+                        CREATING ACCOUNT...
+                      </span>
+                    ) : "✨ CREATE NEW ACCOUNT"}
+                  </button>
+
+                  <p className="text-[9px] font-mono text-gray-600 text-center">New user? Fill fields above then click CREATE. Existing user? Click LOGIN.</p>
+
+                  <div className="text-center mt-1">
+                    <button
+                      type="button"
+                      onClick={onGuest}
+                      className="text-[10px] font-mono text-cyan-400 hover:text-cyan-300 uppercase tracking-widest underline underline-offset-4"
+                    >
+                      ⚡ EXPLORE AS GUEST NODE
+                    </button>
+                  </div>
+
+                  <div className="text-center mt-3 pt-2 border-t border-purple-500/10">
+                    <button
+                      type="button"
+                      onClick={() => setShowServerConfig(true)}
+                      className="text-[9px] font-mono text-purple-400/80 hover:text-purple-300 uppercase tracking-widest flex items-center justify-center gap-1.5 mx-auto transition-all"
+                    >
+                      ⚙️ CONFIGURE GATEWAY
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
-
-            <div className="flex flex-col gap-2 mt-2">
-              {/* LOGIN - works with any password */}
-              <button
-                onClick={handleLogin}
-                disabled={isSubmitting || isRegistering || !credUsername.trim() || !credPassword.trim()}
-                className="w-full py-3 bg-purple-600 hover:bg-purple-500 active:scale-95 disabled:bg-purple-900/20 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all border border-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.2)]"
-              >
-                {isSubmitting ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" />
-                    LOGGING IN...
-                  </span>
-                ) : "🔑 LOGIN"}
-              </button>
-
-              {/* REGISTER - requires strong password */}
-              <button
-                onClick={handleRegister}
-                disabled={isSubmitting || isRegistering || !credUsername.trim() || !credPassword.trim()}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 active:scale-95 disabled:bg-emerald-950/20 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.2)]"
-              >
-                {isRegistering ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" />
-                    CREATING ACCOUNT...
-                  </span>
-                ) : "✨ CREATE NEW ACCOUNT"}
-              </button>
-
-              <p className="text-[9px] font-mono text-gray-600 text-center">New user? Fill fields above then click CREATE. Existing user? Click LOGIN.</p>
-
-              <div className="text-center mt-1">
-                <button
-                  type="button"
-                  onClick={onGuest}
-                  className="text-[10px] font-mono text-cyan-400 hover:text-cyan-300 uppercase tracking-widest underline underline-offset-4"
-                >
-                  ⚡ EXPLORE AS GUEST NODE
-                </button>
-              </div>
-            </div>
           </motion.div>
         ) : loginMode === "face" ? (
           <motion.div className="relative group cursor-pointer flex items-center justify-center w-[270px] h-[270px] z-10" onClick={startScan}>
