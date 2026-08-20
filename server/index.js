@@ -713,6 +713,34 @@ io.on("connection", (socket) => {
             status: 'SUCCESS'
         };
 
+        // Create and broadcast Payment Slip message in chat (matches screenshot format)
+        const slipMessage = {
+            id: `msg_slip_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            senderId: socket.id,
+            senderName: sender.username,
+            senderUsername: sender.username,
+            targetId: recipientKey,
+            targetUsername: recipientKey,
+            text: `💸 [PAYMENT SLIP] ${transferAmt.toLocaleString()} LKR → ${recipientKey} | TxID: ${txnId} | ${noteText}`,
+            isEncrypted: false,
+            isUser: true,
+            timestamp: new Date(),
+            slipData: {
+                amount: transferAmt,
+                from: sender.username,
+                to: recipientKey,
+                note: noteText,
+                txnId: txnId,
+                isCollected: true,
+                collectedAt: nowIso
+            }
+        };
+        db.messages.push(slipMessage);
+        saveDb();
+
+        // Broadcast slip message into chat timeline
+        io.emit("receive_message", slipMessage);
+
         // Notify Sender
         socket.emit("wallet_update", senderUser);
         socket.emit("transfer_success", {
@@ -732,6 +760,36 @@ io.on("connection", (socket) => {
                 io.to(activeSocketId).emit("transfer_received", { receipt: receiptPayload });
             }
         });
+    });
+
+    // Real-Time Username Verification Handler with Green/Red validation
+    socket.on("check_recipient_username", ({ username }) => {
+        if (!username || username.trim() === "") {
+            return socket.emit("recipient_check_result", { valid: false, message: "Please enter a username" });
+        }
+        const clean = username.trim().replace(/^@/, '');
+        const sender = activeUsers.get(socket.id);
+        if (sender && sender.username && sender.username.toLowerCase() === clean.toLowerCase()) {
+            return socket.emit("recipient_check_result", { valid: false, isSelf: true, message: "Cannot transfer to yourself" });
+        }
+
+        const recipientKey = Object.keys(db.users).find(u => u.toLowerCase() === clean.toLowerCase());
+        if (recipientKey) {
+            const isOnline = Array.from(activeUsers.values()).some(u => u.username && u.username.toLowerCase() === recipientKey.toLowerCase());
+            return socket.emit("recipient_check_result", {
+                valid: true,
+                username: recipientKey,
+                avatar: db.users[recipientKey].avatar || recipientKey,
+                isOnline: isOnline,
+                message: `✔ VERIFIED ACCOUNT: @${recipientKey}`
+            });
+        } else {
+            return socket.emit("recipient_check_result", {
+                valid: false,
+                username: clean,
+                message: `✖ ACCOUNT NOT FOUND: '@${clean}'`
+            });
+        }
     });
 
     // Fetch registered users for P2P transfer selection

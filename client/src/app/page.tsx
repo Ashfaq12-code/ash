@@ -2148,7 +2148,6 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
           socket={socket}
           username={username}
           walletBalance={walletInfo?.wallet || 0}
-          registeredUsers={registeredUsersList}
           defaultRecipient={transferRecipient}
           loading={transferLoading}
           error={transferError}
@@ -4470,7 +4469,6 @@ function TransferModal({
   socket,
   username,
   walletBalance,
-  registeredUsers,
   defaultRecipient,
   loading,
   error
@@ -4480,7 +4478,6 @@ function TransferModal({
   socket: Socket | null;
   username: string;
   walletBalance: number;
-  registeredUsers: any[];
   defaultRecipient?: string;
   loading: boolean;
   error: string | null;
@@ -4489,15 +4486,81 @@ function TransferModal({
   const [amount, setAmount] = useState<number | string>(1000);
   const [note, setNote] = useState("");
 
+  const [verificationState, setVerificationState] = useState<'idle' | 'valid' | 'invalid'>('idle');
+  const [verificationMsg, setVerificationMsg] = useState<string>("");
+  const [shakeError, setShakeError] = useState(false);
+
   useEffect(() => {
-    if (defaultRecipient) setRecipient(defaultRecipient);
-  }, [defaultRecipient]);
+    if (defaultRecipient) {
+      setRecipient(defaultRecipient);
+      if (socket) socket.emit("check_recipient_username", { username: defaultRecipient });
+    }
+  }, [defaultRecipient, socket]);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleResult = (res: any) => {
+      if (res.valid) {
+        setVerificationState('valid');
+        setVerificationMsg(res.message || `✔ VERIFIED ONLINE ACCOUNT (@${res.username})`);
+        setShakeError(false);
+        try {
+          const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3");
+          audio.volume = 0.5;
+          audio.play().catch(() => {});
+        } catch (e) {}
+      } else {
+        setVerificationState('invalid');
+        setVerificationMsg(res.message || `✖ ACCOUNT NOT FOUND`);
+        setShakeError(true);
+        setTimeout(() => setShakeError(false), 450);
+        try {
+          if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+            window.navigator.vibrate([100, 50, 100]);
+          }
+        } catch (e) {}
+        try {
+          const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2572/2572-preview.mp3");
+          audio.volume = 0.5;
+          audio.play().catch(() => {});
+        } catch (e) {}
+      }
+    };
+
+    socket.on("recipient_check_result", handleResult);
+    return () => {
+      socket.off("recipient_check_result", handleResult);
+    };
+  }, [socket]);
+
+  const handleRecipientChange = (val: string) => {
+    setRecipient(val);
+    if (!val.trim()) {
+      setVerificationState('idle');
+      setVerificationMsg("");
+      return;
+    }
+    if (socket) {
+      socket.emit("check_recipient_username", { username: val });
+    }
+  };
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!socket) return;
+    if (verificationState === 'invalid') {
+      setShakeError(true);
+      setTimeout(() => setShakeError(false), 450);
+      try {
+        if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+          window.navigator.vibrate([100, 50, 100]);
+        }
+      } catch (e) {}
+      return;
+    }
     socket.emit("transfer_wallet_funds", {
       recipientUsername: recipient,
       amount: typeof amount === "string" ? parseFloat(amount) : amount,
@@ -4524,8 +4587,8 @@ function TransferModal({
         </div>
 
         {error && (
-          <div className="mb-6 bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-mono p-4 rounded-2xl flex items-center gap-3">
-            <Zap className="w-4 h-4 shrink-0" />
+          <div className="mb-6 bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-mono p-4 rounded-2xl flex items-center gap-3 animate-shake">
+            <ShieldAlert className="w-4 h-4 shrink-0" />
             <span>{error}</span>
           </div>
         )}
@@ -4538,28 +4601,35 @@ function TransferModal({
 
           <div>
             <label className="block text-gray-400 text-xs font-mono uppercase mb-2">Recipient Username</label>
-            <input
-              type="text"
-              value={recipient}
-              onChange={(e) => setRecipient(e.target.value)}
-              placeholder="e.g. ash002"
-              className="w-full bg-[#050810] border border-white/10 rounded-2xl px-5 py-4 text-white font-mono text-sm focus:outline-none focus:border-emerald-500 transition-all"
-              required
-            />
-            {registeredUsers && registeredUsers.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                <span className="text-[10px] text-gray-500 font-mono py-1">Quick Select:</span>
-                {registeredUsers.filter(u => u.username !== username).slice(0, 5).map(u => (
-                  <button
-                    key={u.username}
-                    type="button"
-                    onClick={() => setRecipient(u.username)}
-                    className="text-[11px] bg-white/5 hover:bg-emerald-500/20 text-emerald-300 border border-white/10 hover:border-emerald-500/40 px-3 py-1 rounded-full font-mono transition-all"
-                  >
-                    @{u.username}
-                  </button>
-                ))}
+            <div className="relative">
+              <input
+                type="text"
+                value={recipient}
+                onChange={(e) => handleRecipientChange(e.target.value)}
+                placeholder="Enter exact account username (e.g. ash002)"
+                className={`w-full bg-[#050810] border rounded-2xl px-5 py-4 text-white font-mono text-sm focus:outline-none transition-all ${
+                  shakeError ? 'animate-shake' : ''
+                } ${
+                  verificationState === 'valid'
+                    ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+                    : verificationState === 'invalid'
+                    ? 'border-red-500 bg-red-500/10 text-red-300 shadow-[0_0_20px_rgba(239,68,68,0.3)]'
+                    : 'border-white/10 focus:border-emerald-500'
+                }`}
+                required
+              />
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                {verificationState === 'valid' && <CheckCircle2 className="w-5 h-5 text-emerald-400 animate-pulse" />}
+                {verificationState === 'invalid' && <ShieldAlert className="w-5 h-5 text-red-500 animate-bounce" />}
               </div>
+            </div>
+
+            {verificationMsg && (
+              <p className={`mt-2 font-mono text-xs flex items-center gap-1.5 ${
+                verificationState === 'valid' ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'
+              }`}>
+                {verificationMsg}
+              </p>
             )}
           </div>
 
@@ -4595,15 +4665,19 @@ function TransferModal({
               type="text"
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="e.g. Ludo game bet fund / Friend gift"
+              placeholder="e.g. Payment for consultation / Ludo game fund"
               className="w-full bg-[#050810] border border-white/10 rounded-2xl px-5 py-4 text-white text-sm focus:outline-none focus:border-emerald-500 transition-all"
             />
           </div>
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full py-5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-lg rounded-2xl transition-all shadow-[0_0_30px_rgba(16,185,129,0.4)] uppercase tracking-widest flex items-center justify-center gap-2"
+            disabled={loading || verificationState === 'invalid'}
+            className={`w-full py-5 font-black text-lg rounded-2xl transition-all shadow-[0_0_30px_rgba(16,185,129,0.4)] uppercase tracking-widest flex items-center justify-center gap-2 ${
+              verificationState === 'invalid'
+                ? 'bg-red-500/20 text-red-400 border border-red-500/40 cursor-not-allowed'
+                : 'bg-emerald-500 hover:bg-emerald-400 text-black'
+            }`}
           >
             {loading ? (
               <span className="animate-pulse">PROCESSING TRANSIT...</span>
