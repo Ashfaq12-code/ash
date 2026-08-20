@@ -184,62 +184,71 @@ io.on("connection", (socket) => {
         const { username, password } = data;
         if (!username || !password) return socket.emit("auth_error", "Username and Password required");
 
-        if (db.users[username]) {
-            return socket.emit("auth_error", "Username already taken");
+        const cleanUsername = username.trim();
+        const existingKey = Object.keys(db.users).find(u => u.toLowerCase() === cleanUsername.toLowerCase());
+
+        if (existingKey) {
+            return socket.emit("auth_error", `Account '@${existingKey}' already exists. Click 'LOGIN' to sign in.`);
         }
 
-        db.users[username] = {
+        db.users[cleanUsername] = {
             password, // In a real app, hash this!
             wallet: 15000,
             hasClaimedBonus: false,
             history: [{ type: 'cash_in', amount: 15000, reason: 'Registration Welcome Bonus 🎁', date: new Date().toISOString() }],
             inventory: { tokens: ['standard'], boards: ['classic'], selectedToken: 'standard', selectedBoard: 'classic' },
-            avatar: username,
+            avatar: cleanUsername,
             about: "Active Neural Agent",
             showLastSeen: true
         };
         saveDb();
 
-        const userObj = { id: socket.id, username, status: "online", joinTime: new Date(), avatar: username, about: "Active Neural Agent", showLastSeen: true };
+        const userObj = { id: socket.id, username: cleanUsername, status: "online", joinTime: new Date(), avatar: cleanUsername, about: "Active Neural Agent", showLastSeen: true };
         activeUsers.set(socket.id, userObj);
 
-        socket.emit("auth_success", { username, wallet: db.users[username].wallet, inventory: db.users[username].inventory, avatar: username, about: "Active Neural Agent", showLastSeen: true });
-        socket.emit("wallet_update", db.users[username]);
+        socket.emit("auth_success", { username: cleanUsername, wallet: db.users[cleanUsername].wallet, inventory: db.users[cleanUsername].inventory, avatar: cleanUsername, about: "Active Neural Agent", showLastSeen: true });
+        socket.emit("wallet_update", db.users[cleanUsername]);
         broadcastUsers();
-        triggerWelcomeGreeting(socket, username);
+        triggerWelcomeGreeting(socket, cleanUsername);
     });
 
     socket.on("login_auth", (data) => {
         const { username, password } = data;
-        if (!db.users[username]) {
-            return socket.emit("auth_error", "Account not found. Click 'CREATE ACCOUNT' above to register first.");
+        if (!username || !password) return socket.emit("auth_error", "Username and Password required");
+
+        const cleanUsername = username.trim();
+        const userKey = Object.keys(db.users).find(u => u.toLowerCase() === cleanUsername.toLowerCase());
+
+        if (!userKey) {
+            return socket.emit("auth_error", `Account '@${cleanUsername}' not found. Click 'CREATE ACCOUNT' above to register first.`);
         }
-        if (db.users[username].password !== password) {
+
+        if (db.users[userKey].password !== password) {
             return socket.emit("auth_error", "Incorrect security credentials.");
         }
 
         const userObj = { 
             id: socket.id, 
-            username, 
+            username: userKey, 
             status: "online", 
             joinTime: new Date(), 
-            avatar: db.users[username].avatar || username,
-            about: db.users[username].about || "Active Neural Agent",
-            showLastSeen: db.users[username].showLastSeen !== false
+            avatar: db.users[userKey].avatar || userKey,
+            about: db.users[userKey].about || "Active Neural Agent",
+            showLastSeen: db.users[userKey].showLastSeen !== false
         };
         activeUsers.set(socket.id, userObj);
 
         socket.emit("auth_success", { 
-            username, 
-            wallet: db.users[username].wallet, 
-            inventory: db.users[username].inventory, 
-            avatar: db.users[username].avatar || username,
-            about: db.users[username].about || "Active Neural Agent",
-            showLastSeen: db.users[username].showLastSeen !== false
+            username: userKey, 
+            wallet: db.users[userKey].wallet, 
+            inventory: db.users[userKey].inventory, 
+            avatar: db.users[userKey].avatar || userKey,
+            about: db.users[userKey].about || "Active Neural Agent",
+            showLastSeen: db.users[userKey].showLastSeen !== false
         });
-        socket.emit("wallet_update", db.users[username]);
+        socket.emit("wallet_update", db.users[userKey]);
         broadcastUsers();
-        triggerWelcomeGreeting(socket, username);
+        triggerWelcomeGreeting(socket, userKey);
     });
 
     socket.on("get_chat_history", () => {
