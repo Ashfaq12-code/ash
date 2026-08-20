@@ -4703,8 +4703,23 @@ function DigitalReceiptModal({
   if (!receipt) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/90 backdrop-blur-2xl z-[160] flex items-center justify-center p-4">
-      <div className="bg-[#080d18] border-2 border-emerald-500/50 rounded-3xl w-full max-w-md p-8 shadow-[0_0_80px_rgba(16,185,129,0.3)] relative overflow-hidden text-white font-sans">
+    <div 
+      onClick={onClose}
+      className="fixed inset-0 bg-black/90 backdrop-blur-2xl z-[160] flex items-center justify-center p-4"
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[#080d18] border-2 border-emerald-500/50 rounded-3xl w-full max-w-md p-8 shadow-[0_0_80px_rgba(16,185,129,0.3)] relative overflow-hidden text-white font-sans"
+      >
+        {/* Top-Right X Close Button */}
+        <button 
+          onClick={onClose}
+          type="button"
+          className="absolute top-5 right-5 p-2 bg-white/5 hover:bg-white/10 rounded-full transition-all text-gray-400 hover:text-white z-20"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
         <div className="text-center mb-6 border-b border-white/10 pb-6">
           <div className="w-16 h-16 bg-emerald-500/10 border border-emerald-500/40 rounded-full flex items-center justify-center mx-auto mb-3 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]">
             <CheckCircle2 className="w-10 h-10 animate-bounce" />
@@ -4761,14 +4776,20 @@ function DigitalReceiptModal({
 
         <div className="flex gap-3">
           <button
+            type="button"
             onClick={() => window.print()}
             className="flex-1 py-4 bg-white/5 hover:bg-white/10 text-white font-bold text-xs rounded-xl border border-white/10 uppercase tracking-widest flex items-center justify-center gap-2 transition-all"
           >
             <Receipt className="w-4 h-4" /> Save / Print
           </button>
           <button
-            onClick={onClose}
-            className="flex-1 py-4 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs rounded-xl uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            className="flex-1 py-4 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs rounded-xl uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)] cursor-pointer"
           >
             Done
           </button>
