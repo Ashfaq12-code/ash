@@ -129,11 +129,8 @@ export default function App() {
     // (since localtunnel's abuse interstitial fails in standard cross-origin browser requests),
     // default to the reliable, active Railway backend.
     if (!socketUrl || (socketUrl.includes("loca.lt") && !isLocalhost && !socketUrlOverride)) {
-      if (!isLocalhost) {
-        socketUrl = "https://as-production-14d0.up.railway.app";
-      } else {
-        socketUrl = "http://localhost:5000";
-      }
+      // Always use Railway backend - works both locally and in production
+      socketUrl = "https://as-production-14d0.up.railway.app";
     } else if (socketUrl) {
       // If it doesn't have http:// or https://, prepend https:// for production reliability
       if (!socketUrl.startsWith("http://") && !socketUrl.startsWith("https://")) {
