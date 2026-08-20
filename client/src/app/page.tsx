@@ -1336,6 +1336,13 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
         const isCurrentChat = senderUsername === currentTargetUsername || msg.senderId === selectedChatIdRef.current;
 
         if (!isCurrentChat && msg.id && !msg.id.startsWith("sys_")) {
+          // If it's a payment slip/transfer message, ONLY show toast notification to sender or recipient!
+          if (msg.slipData || (typeof msg.text === 'string' && msg.text.includes('[PAYMENT SLIP]'))) {
+            const isParticipant = (msg.senderUsername === username || msg.senderName === username || msg.targetUsername === username || msg.slipData?.to === username || msg.slipData?.from === username);
+            if (!isParticipant) {
+              return; // Ignore notification for third-party accounts
+            }
+          }
           try {
             const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3");
             audio.play().catch(() => { });
@@ -1857,6 +1864,10 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
                     wallet: (prev?.wallet || 0) + amount,
                     history: [{ type: 'received', amount, from: selectedChatId?.replace('virtual_', '') || 'Community', date: new Date().toISOString() }, ...(prev?.history || [])]
                   }));
+                }}
+                onSelectReceipt={(receipt: any) => {
+                  setActiveReceipt(receipt);
+                  setShowReceiptModal(true);
                 }}
               />
             </motion.div>
@@ -2848,7 +2859,7 @@ function AiVoiceCallInterface({ activeCall, onEnd, socket }: any) {
   )
 }
 
-function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, typingStatus, setUnreadMap, setLastMessageMap, selectedChatId, onlineUsers, onCall, onBack, nicknames, onNicknameChange, archivedChats, toggleArchiveChat, deleteChat, isVirtualDm, onCollectPayment, virtualDmOpening, autoStartLudoLobby, onDeployToGrid, avatarCache }: any) {
+function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, typingStatus, setUnreadMap, setLastMessageMap, selectedChatId, onlineUsers, onCall, onBack, nicknames, onNicknameChange, archivedChats, toggleArchiveChat, deleteChat, isVirtualDm, onCollectPayment, virtualDmOpening, autoStartLudoLobby, onDeployToGrid, avatarCache, onSelectReceipt }: any) {
   // Helper: resolve avatar src using cache (keyed by username) with fallback
   const getAvatarSrcLocal = (uname: string, fallback?: string): string => {
     const av = (avatarCache && avatarCache[uname]) || fallback || uname || 'default';
@@ -3483,54 +3494,72 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                     <div className="text-[10px] font-mono text-emerald-600 tracking-widest bg-emerald-950/20 px-4 py-2 rounded-full border border-emerald-900/50 uppercase my-4">
                       {msg.text}
                     </div>
-                  ) : msg.isPaymentSlip ? (
+                  ) : (msg.isPaymentSlip || msg.slipData || (typeof msg.text === 'string' && msg.text.includes('[PAYMENT SLIP]'))) ? (
                     <div className={`flex flex-col ${msg.senderName === username ? "items-end" : "items-start"} w-full max-w-[85%] md:max-w-[70%]`}>
-                      <div className="bg-gradient-to-b from-amber-900/20 to-[#0c1222] border border-amber-500/30 rounded-2xl p-4 shadow-[0_0_20px_rgba(245,158,11,0.1)] min-w-[240px] max-w-[300px]">
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xl">🏦</span>
-                            <div>
-                              <p className="text-amber-400 font-black text-[10px] font-mono uppercase tracking-widest">Payment Slip</p>
-                              <p className="text-gray-500 text-[9px] font-mono">Aura Transfer System</p>
+                      <div className="bg-[#0b1320] border-2 border-emerald-500/40 rounded-2xl p-4 shadow-[0_0_25px_rgba(16,185,129,0.15)] min-w-[260px] max-w-[320px] relative overflow-hidden font-sans">
+                        {/* Top PDF File Header Bar */}
+                        <div className="flex items-center justify-between bg-black/40 border border-white/10 rounded-xl p-2.5 mb-3">
+                          <div className="flex items-center gap-2.5 overflow-hidden">
+                            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0 text-emerald-400 font-bold">
+                              <Receipt className="w-4 h-4" />
+                            </div>
+                            <div className="overflow-hidden">
+                              <p className="text-white font-mono text-[11px] font-bold truncate">NEURAL_TRANSIT_RECEIPT.pdf</p>
+                              <p className="text-emerald-400 font-mono text-[9px] uppercase tracking-wider">PDF DOCUMENT • VERIFIED</p>
                             </div>
                           </div>
-                          <span className="text-[8px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono font-bold">✓ VERIFIED</span>
+                          <span className="text-[9px] bg-emerald-500/20 text-emerald-300 font-mono px-2 py-0.5 rounded-md border border-emerald-500/40 uppercase font-bold shrink-0">PDF</span>
                         </div>
-                        <div className="border-t border-white/5 pt-3 space-y-1.5">
-                          <div className="flex justify-between text-[10px] font-mono"><span className="text-gray-500">From</span><span className="text-white font-bold">{msg.slipData?.from}</span></div>
-                          <div className="flex justify-between text-[10px] font-mono"><span className="text-gray-500">To</span><span className="text-white font-bold">{msg.slipData?.to}</span></div>
-                          <div className="flex justify-between text-[10px] font-mono"><span className="text-gray-500">TxID</span><span className="text-gray-400 text-[9px]">{msg.slipData?.txId}</span></div>
-                          {msg.slipData?.note && <div className="flex justify-between text-[10px] font-mono gap-2"><span className="text-gray-500 shrink-0">Note</span><span className="text-gray-400 text-right text-[9px]">{msg.slipData.note}</span></div>}
-                        </div>
-                        <div className="mt-3 pt-3 border-t border-amber-500/20 text-center">
-                          <p className="text-amber-400 font-black text-2xl font-mono">{msg.slipData?.amount} <span className="text-xs font-normal">LKR</span></p>
-                          <p className="text-gray-600 text-[9px] font-mono mt-0.5">{msg.slipData?.timestamp ? new Date(msg.slipData.timestamp).toLocaleString() : ''}</p>
-                        </div>
-                        {/* Collection UI */}
-                        {msg.slipData?.to === username && (
-                          <div className="mt-4">
-                            {msg.slipData?.isCollected ? (
-                              <div className="w-full py-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-black text-[10px] uppercase tracking-widest rounded-lg flex items-center justify-center gap-2">
-                                <ShieldCheck className="w-4 h-4" /> COLLECTED
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => socket?.emit('collect_payment_slip', { messageId: msg.id })}
-                                className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-[#050810] font-black text-[10px] uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.4)] transition-all"
-                              >
-                                💰 COLLECT NOW
-                              </button>
-                            )}
+
+                        {/* PDF Document Body Content */}
+                        <div className="bg-[#04070f] border border-white/5 rounded-xl p-3 space-y-2 font-mono text-[10px]">
+                          <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
+                            <span className="text-gray-500 uppercase">Route</span>
+                            <span className="text-white font-bold">@{msg.slipData?.from || msg.senderUsername || msg.senderName} ➔ @{msg.slipData?.to || msg.targetUsername}</span>
                           </div>
-                        )}
-                        {/* Status for Sender */}
-                        {msg.slipData?.from === username && msg.slipData?.isCollected && (
-                          <div className="mt-4 w-full py-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-black text-[10px] uppercase tracking-widest rounded-lg flex items-center justify-center gap-2">
-                            <ShieldCheck className="w-4 h-4" /> CLAIMED BY RECIPIENT
+                          <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
+                            <span className="text-gray-500 uppercase">TxID</span>
+                            <span className="text-amber-400 font-bold">{msg.slipData?.txnId || msg.slipData?.txId || 'TXN-SETTLED'}</span>
                           </div>
-                        )}
+                          {msg.slipData?.note && (
+                            <div className="flex justify-between items-start border-b border-white/5 pb-1.5">
+                              <span className="text-gray-500 uppercase">Memo</span>
+                              <span className="text-gray-300 text-right font-sans">{msg.slipData.note}</span>
+                            </div>
+                          )}
+                          <div className="pt-2 text-center">
+                            <span className="text-gray-400 text-[9px] uppercase block mb-0.5">Amount Settlement</span>
+                            <p className="text-3xl font-black text-emerald-400 font-mono tracking-tight">{(msg.slipData?.amount || 0).toLocaleString()} <span className="text-xs">LKR</span></p>
+                          </div>
+                        </div>
+
+                        {/* PDF View / Inspect Button */}
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onSelectReceipt) {
+                                onSelectReceipt({
+                                  txnId: msg.slipData?.txnId || msg.slipData?.txId || 'TXN-VERIFIED',
+                                  sender: msg.slipData?.from || msg.senderUsername || msg.senderName,
+                                  recipient: msg.slipData?.to || msg.targetUsername || username,
+                                  amount: msg.slipData?.amount || 0,
+                                  note: msg.slipData?.note || 'Neural Wallet Transit',
+                                  date: msg.slipData?.collectedAt || msg.timestamp || new Date().toISOString(),
+                                  status: 'COMPLETED'
+                                });
+                              }
+                            }}
+                            className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[10px] uppercase tracking-widest rounded-xl flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all cursor-pointer"
+                          >
+                            <Receipt className="w-4 h-4" /> 📄 VIEW / DOWNLOAD PDF RECEIPT
+                          </button>
+                        </div>
+
+                        <span className="text-[9px] text-gray-500 font-mono mt-2 block text-right">
+                          {msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
                       </div>
-                      <span className="text-[9px] text-gray-600 font-mono mt-1 mx-1">{msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
                   ) : (
                     <div className={`w-full max-w-[85%] md:max-w-[70%] flex flex-col ${msg.senderName === username ? "items-end" : "items-start"}`}>
