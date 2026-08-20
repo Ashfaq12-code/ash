@@ -125,11 +125,9 @@ export default function App() {
       window.location.hostname.startsWith("192.168.")
     );
 
-    // If socketUrl is empty, or points to localtunnel (loca.lt) in production
-    // (since localtunnel's abuse interstitial fails in standard cross-origin browser requests),
-    // default to the reliable, active Railway backend.
-    if (!socketUrl || (socketUrl.includes("loca.lt") && !isLocalhost && !socketUrlOverride)) {
-      // Always use Railway backend - works both locally and in production
+    // Always use Railway backend - override any localhost or localtunnel URLs
+    if (!socketUrl || socketUrl.includes("localhost") || socketUrl.includes("127.0.0.1") || socketUrl.includes("loca.lt")) {
+      // Force Railway backend - works both locally and in production
       socketUrl = "https://as-production-14d0.up.railway.app";
     } else if (socketUrl) {
       // If it doesn't have http:// or https://, prepend https:// for production reliability
