@@ -21,7 +21,7 @@ class LudoGame:
         self.dice_rolled = False
         self.consecutive_sixes = 0
 
-    def add_player(self, sid, name, is_bot=False):
+    def _player(self, sid, name, is_bot=False):
         if len(self.players) < 4 and self.state == 'waiting':
             for p in self.players:
                 if p['name'] == name:

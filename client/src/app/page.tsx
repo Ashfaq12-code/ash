@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ScanFace, Terminal, ShieldAlert, ShieldCheck, Cpu, Video, Phone, Users, LayoutDashboard, Settings, MoreVertical, MessageSquare, Lock, PhoneCall, X, Image as ImageIcon, Smile, User, Gamepad2, Swords, Zap, Wallet, UserPlus, LogOut, ChevronLeft, ChevronRight, ChevronDown, Eye, EyeOff, Info, Pencil, Check, Sparkles, Archive, Trash, ArrowLeft, Compass, HelpCircle, BookOpen, MessageCircle, CheckCircle2, Receipt } from "lucide-react";
+import { Send, ScanFace, Terminal, ShieldAlert, ShieldCheck, Cpu, Video, Phone, Users, LayoutDashboard, Settings, MoreVertical, MessageSquare, Lock, PhoneCall, X, Image as ImageIcon, Smile, User, Gamepad2, Swords, Zap, Wallet, UserPlus, LogOut, ChevronLeft, ChevronRight, ChevronDown, Eye, EyeOff, Info, Pencil, Check, Sparkles, Archive, Trash, Trash2, Reply, ArrowLeft, Compass, HelpCircle, BookOpen, MessageCircle, CheckCircle2, Receipt, CalendarDays } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 import CryptoJS from 'crypto-js';
 import Peer from 'simple-peer';
@@ -86,6 +86,7 @@ interface Message {
   replyToId?: string;
   replyToSender?: string;
   replyToText?: string;
+  replyToIsImage?: boolean;
   ludoPlayerSlots?: string[];
   status?: string;
 }
@@ -1440,12 +1441,23 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
 
     socket.on("transfer_received", (data: any) => {
       setActiveReceipt(data.receipt);
-      setShowReceiptModal(true);
+      // DO NOT call setShowReceiptModal(true) on recipient side so no popup forces open!
       try {
         const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3");
         audio.play().catch(() => {});
       } catch (e) {}
-      setToast({ id: 'sys_transfer_recv', name: "NEURAL BANK", text: `📥 Received ${data.receipt?.amount?.toLocaleString()} LKR from @${data.receipt?.sender}!` });
+      const senderUname = data.receipt?.sender;
+      if (senderUname) {
+        setUnreadMap((p: any) => ({ ...p, [senderUname]: true }));
+        setLastMessageMap((p: any) => ({
+          ...p,
+          [senderUname]: Date.now(),
+          [`text_${senderUname}`]: `💸 Received ${data.receipt?.amount?.toLocaleString()} LKR from @${senderUname}`
+        }));
+      }
+      const senderUserObj = onlineUsers.find((u: any) => u.username?.toLowerCase() === senderUname?.toLowerCase());
+      const toastTargetId = senderUserObj ? senderUserObj.id : senderUname;
+      setToast({ id: toastTargetId || 'sys_transfer_recv', name: `@${senderUname || "NEURAL BANK"}`, text: `📥 Received ${data.receipt?.amount?.toLocaleString()} LKR from @${senderUname}!` });
     });
 
     socket.on("transfer_error", (data: any) => {
@@ -2165,10 +2177,15 @@ function MainDashboard({ socket, username, setUsername, avatarSeed, setAvatarSee
         />
 
         {/* Digital Receipt Modal Overlay */}
-        <DigitalReceiptModal
-          receipt={activeReceipt}
-          onClose={() => setShowReceiptModal(false)}
-        />
+        {showReceiptModal && activeReceipt && (
+          <DigitalReceiptModal
+            receipt={activeReceipt}
+            onClose={() => {
+              setShowReceiptModal(false);
+              setActiveReceipt(null);
+            }}
+          />
+        )}
       </main>
     </div>
   );
@@ -2922,10 +2939,16 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
   const [input, setInput] = useState("");
   const [showEmoji, setShowEmoji] = useState(false);
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
+  const [activeMessageMenu, setActiveMessageMenu] = useState<{ id: string; msg: any; x: number; y: number; isOwn: boolean } | null>(null);
+  const [deletedForMeIds, setDeletedForMeIds] = useState<string[]>([]);
+  const [undoSnackbar, setUndoSnackbar] = useState<{ messageId: string; message: any; countdown: number } | null>(null);
   const [replyingTo, setReplyingTo] = useState<any | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wallpaperFileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
   const isTargetTyping = typingStatus && (
     (!targetId && typingStatus.toLowerCase().includes("aura-os")) ||
@@ -3084,9 +3107,122 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
     // For normal users, match by username
     const currentTargetName = targetName || (targetId ? onlineUsers.find((u: any) => u.id === targetId)?.username : null);
     if (!currentTargetName) return false;
-    return (msg.senderUsername === currentTargetName && msg.targetUsername === username) ||
-           (msg.senderUsername === username && msg.targetUsername === currentTargetName);
+    return (
+      (msg.senderUsername === currentTargetName && (msg.targetUsername === username || msg.slipData?.to === username)) ||
+      (msg.senderUsername === username && (msg.targetUsername === currentTargetName || msg.slipData?.to === currentTargetName)) ||
+      (msg.slipData && ((msg.slipData.from === currentTargetName && msg.slipData.to === username) || (msg.slipData.from === username && msg.slipData.to === currentTargetName)))
+    );
   });
+
+  const visibleMessages = activeMessages.filter(msg => !deletedForMeIds.includes(msg.id));
+
+  // 4-second Countdown timer for Undo Delete For Me
+  useEffect(() => {
+    if (!undoSnackbar) return;
+    const interval = setInterval(() => {
+      setUndoSnackbar(prev => {
+        if (!prev) return null;
+        if (prev.countdown <= 1) {
+          clearInterval(interval);
+          return null;
+        }
+        return { ...prev, countdown: prev.countdown - 1 };
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [undoSnackbar]);
+
+  const handleToggleReaction = (msg: any, emoji: string) => {
+    const msgIdStr = String(msg.id);
+    // 1. Immediate optimistic UI update
+    setMessages(prev => prev.map(m => {
+      if (String(m.id) === msgIdStr) {
+        const currentReactions = { ...(m.reactions || {}) };
+        if (currentReactions[username] === emoji) {
+          delete currentReactions[username];
+        } else {
+          currentReactions[username] = emoji;
+        }
+        return { ...m, reactions: currentReactions };
+      }
+      return m;
+    }));
+    // 2. Broadcast to other accounts in real-time
+    socket?.emit("toggle_reaction", { messageId: msg.id, emoji, username });
+  };
+
+  const handleDeleteForMe = (msg: any) => {
+    setDeletedForMeIds(prev => [...prev, msg.id]);
+    setUndoSnackbar({ messageId: msg.id, message: msg, countdown: 4 });
+  };
+
+  const handleDeleteForEveryone = (msg: any) => {
+    socket?.emit("delete_message", { messageId: msg.id, forEveryone: true });
+    setMessages(prev => prev.filter(m => m.id !== msg.id));
+  };
+
+  const scrollToMessage = (msgId: string) => {
+    if (!msgId) return;
+    const el = messageRefs.current.get(String(msgId));
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedMsgId(String(msgId));
+      if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+        try { window.navigator.vibrate([50, 70, 50]); } catch(e) {}
+      }
+      setTimeout(() => {
+        setHighlightedMsgId(null);
+      }, 2000);
+    }
+  };
+
+  // Mobile Touch & Hold (Long-Press) for reactions and options
+  const touchTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent, msg: any) => {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+
+    touchTimerRef.current = setTimeout(() => {
+      if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+        try { window.navigator.vibrate(40); } catch(err) {}
+      }
+      const isOwn = msg.senderName === username;
+      setActiveMessageMenu({
+        id: msg.id,
+        msg: msg,
+        x: touch.clientX,
+        y: touch.clientY + 10,
+        isOwn
+      });
+      touchTimerRef.current = null;
+    }, 380); // 380ms touch & hold
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!touchStartPosRef.current || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const dx = Math.abs(touch.clientX - touchStartPosRef.current.x);
+    const dy = Math.abs(touch.clientY - touchStartPosRef.current.y);
+    // If user moves finger more than 8px, cancel long-press (user is scrolling)
+    if (dx > 8 || dy > 8) {
+      if (touchTimerRef.current) {
+        clearTimeout(touchTimerRef.current);
+        touchTimerRef.current = null;
+      }
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (touchTimerRef.current) {
+      clearTimeout(touchTimerRef.current);
+      touchTimerRef.current = null;
+    }
+    touchStartPosRef.current = null;
+  };
 
   useEffect(() => {
     if (!socket) return;
@@ -3153,10 +3289,6 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
       }]);
     });
 
-    socket.on("message_deleted", (data: any) => {
-      setMessages(p => p.filter(m => m.id !== data.messageId));
-    });
-
     socket.on("stream_start", (data: any) => {
       // Also update sorting/unread for streaming agents - use senderUsername as key
       const senderUname = data.senderName || data.senderId;
@@ -3210,6 +3342,46 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
     };
   }, [socket, targetId, username]);
 
+  // ── Dedicated always-live effect for reactions + deletes (fixes real-time reaction sync) ──
+  useEffect(() => {
+    if (!socket) return;
+
+    const onDeleted = (data: any) => {
+      setMessages(p => p.filter(m => String(m.id) !== String(data.messageId)));
+    };
+
+    const onReactionUpdated = (data: any) => {
+      if (!data || !data.messageId) return;
+      setMessages(p => p.map(m => {
+        if (String(m.id) === String(data.messageId)) {
+          let nextReactions: Record<string, string> = {};
+          if (data.reactions && typeof data.reactions === 'object') {
+            nextReactions = { ...data.reactions };
+          } else {
+            nextReactions = { ...(m.reactions || {}) };
+            if (data.username && data.emoji) {
+              if (nextReactions[data.username] === data.emoji) {
+                delete nextReactions[data.username];
+              } else {
+                nextReactions[data.username] = data.emoji;
+              }
+            }
+          }
+          return { ...m, reactions: { ...nextReactions } };
+        }
+        return m;
+      }));
+    };
+
+    socket.on("message_deleted", onDeleted);
+    socket.on("message_reaction_updated", onReactionUpdated);
+
+    return () => {
+      socket.off("message_deleted", onDeleted);
+      socket.off("message_reaction_updated", onReactionUpdated);
+    };
+  }, [socket]);
+
   // Emit mark_read whenever we open or switch to a DM
   useEffect(() => {
     if (socket && targetId && !targetId.startsWith("agent_")) {
@@ -3217,7 +3389,10 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
     }
   }, [socket, targetId]);
 
-  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [activeMessages]);
+  // Scroll to bottom ONLY when opening or switching to a chat conversation
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [targetId]);
 
   // Auto-start Ludo lobby when invited from community
   useEffect(() => {
@@ -3273,6 +3448,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
         replyToId: replyingTo ? replyingTo.id : null,
         replyToSender: replyingTo ? replyingTo.senderName || replyingTo.sender : null,
         replyToText: replyingTo ? replyingTo.text : null,
+        replyToIsImage: replyingTo ? (!!replyingTo.isImage || (typeof replyingTo.text === 'string' && (replyingTo.text.startsWith('data:image') || (replyingTo.text.startsWith('http') && !replyingTo.isVideo)))) : false,
       };
       setMessages(prev => [...prev, userMsg as any]);
       setInput('');
@@ -3318,6 +3494,7 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
       payload.replyToId = replyingTo.id;
       payload.replyToSender = replyingTo.senderName || replyingTo.sender;
       payload.replyToText = replyingTo.text;
+      payload.replyToIsImage = !!replyingTo.isImage || (typeof replyingTo.text === 'string' && (replyingTo.text.startsWith('data:image') || (replyingTo.text.startsWith('http') && !replyingTo.isVideo)));
     }
     socket.emit("send_message", payload);
     setInput("");
@@ -3337,7 +3514,15 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
         if (isImage) {
           result = await compressImage(result, 600, 600, 0.6);
         }
-        socket.emit("send_message", { text: result, targetId: targetId, isImage: isImage, isVideo: isVideo, isEncrypted: false });
+        const mediaPayload: any = { text: result, targetId: targetId, isImage: isImage, isVideo: isVideo, isEncrypted: false };
+        if (replyingTo) {
+          mediaPayload.replyToId = replyingTo.id;
+          mediaPayload.replyToSender = replyingTo.senderName || replyingTo.sender;
+          mediaPayload.replyToText = replyingTo.text;
+          mediaPayload.replyToIsImage = !!replyingTo.isImage || (typeof replyingTo.text === 'string' && (replyingTo.text.startsWith('data:image') || (replyingTo.text.startsWith('http') && !replyingTo.isVideo)));
+          setReplyingTo(null);
+        }
+        socket.emit("send_message", mediaPayload);
       };
       reader.readAsDataURL(file);
     }
@@ -3398,7 +3583,92 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
             </p>
           </div>
         </div>
-        <div className="flex gap-4 relative">
+        <div className="flex items-center gap-2 md:gap-3 relative">
+          {/* WhatsApp Style Calendar Date Jump */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowDatePicker(p => !p)}
+              className={`w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 hover:text-emerald-400 transition-all ${showDatePicker ? 'text-emerald-400 bg-white/5 shadow-[0_0_15px_rgba(16,185,129,0.3)]' : ''}`}
+              title="Jump to date in messages"
+            >
+              <CalendarDays className="w-5 h-5" />
+            </button>
+
+            {showDatePicker && (
+              <div className="absolute right-0 top-12 w-72 bg-[#0c1322]/95 border border-white/10 rounded-2xl p-4 shadow-[0_15px_40px_rgba(0,0,0,0.85)] backdrop-blur-md z-50 animate-in fade-in zoom-in-95 duration-150 font-sans text-xs">
+                <div className="flex items-center justify-between pb-2 mb-3 border-b border-white/10">
+                  <span className="font-bold text-white font-mono uppercase text-[11px] flex items-center gap-1.5">
+                    <CalendarDays className="w-4 h-4 text-emerald-400" /> Jump To Date
+                  </span>
+                  <button onClick={() => setShowDatePicker(false)} className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/10">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <p className="text-[10px] font-mono text-gray-400 uppercase tracking-wider mb-2">
+                  Select Calendar Date:
+                </p>
+                <input
+                  type="date"
+                  onChange={(e) => {
+                    if (!e.target.value) return;
+                    const [y, m, d] = e.target.value.split('-').map(Number);
+                    const targetMsg = visibleMessages.find(msg => {
+                      const msgDate = new Date(msg.timestamp || Date.now());
+                      return msgDate.getFullYear() === y && (msgDate.getMonth() + 1) === m && msgDate.getDate() === d;
+                    });
+                    if (targetMsg) {
+                      scrollToMessage(targetMsg.id);
+                    } else {
+                      const targetTime = new Date(y, m - 1, d).getTime();
+                      let closestMsg = visibleMessages[0];
+                      let minDiff = Infinity;
+                      visibleMessages.forEach(msg => {
+                        const diff = Math.abs(new Date(msg.timestamp || Date.now()).getTime() - targetTime);
+                        if (diff < minDiff) {
+                          minDiff = diff;
+                          closestMsg = msg;
+                        }
+                      });
+                      if (closestMsg) scrollToMessage(closestMsg.id);
+                    }
+                    setShowDatePicker(false);
+                  }}
+                  className="w-full bg-[#050810] border border-white/15 rounded-xl px-3 py-2.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-all cursor-pointer shadow-inner"
+                />
+
+                <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const now = new Date();
+                      const todayMsg = visibleMessages.find(m => new Date(m.timestamp || Date.now()).toDateString() === now.toDateString());
+                      if (todayMsg) scrollToMessage(todayMsg.id);
+                      else if (visibleMessages.length > 0) scrollToMessage(visibleMessages[visibleMessages.length - 1].id);
+                      setShowDatePicker(false);
+                    }}
+                    className="px-2 py-2 bg-white/5 hover:bg-emerald-500/20 text-gray-300 hover:text-emerald-300 rounded-xl text-[10px] font-mono text-center transition-all font-bold"
+                  >
+                    📅 Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (visibleMessages.length > 0) {
+                        scrollToMessage(visibleMessages[0].id);
+                      }
+                      setShowDatePicker(false);
+                    }}
+                    className="px-2 py-2 bg-white/5 hover:bg-cyan-500/20 text-gray-300 hover:text-cyan-300 rounded-xl text-[10px] font-mono text-center transition-all font-bold"
+                  >
+                    ⏳ Oldest Message
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <button onClick={() => { if (targetId) socket.emit("invite_game", { targetId, targetName }); }} className={`w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 ${THEMES[chatTheme].hoverText} transition-all`} title="Invite to Neural Ludo"><Gamepad2 className="w-5 h-5" /></button>
           <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId || x.username === targetName) || { id: targetId, username: targetName }; onCall(u, true); }} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 hover:text-cyan-400 transition-all" title="Video Call"><Video className="w-5 h-5" /></button>
           <button onClick={() => { const u = onlineUsers.find((x: any) => x.id === targetId || x.username === targetName) || { id: targetId, username: targetName }; onCall(u, false); }} className={`w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 ${THEMES[chatTheme].hoverText} transition-all`} title="Voice Call"><Phone className="w-5 h-5" /></button>
@@ -3470,176 +3740,251 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
           {/* Chat Area Scrollable */}
           <div className="flex-1 overflow-y-auto p-6 space-y-4 relative z-10 scrollbar-thin scrollbar-thumb-emerald-900/50">
             <AnimatePresence>
-              {activeMessages.length === 0 && (
+              {visibleMessages.length === 0 && (
                 <div key="empty-messages" className="text-center mt-20 text-gray-600 font-mono text-[10px] uppercase tracking-widest bg-white/5 inline-block px-6 py-2 rounded-full mx-auto block w-max">
                   <ShieldCheck className="inline-block w-4 h-4 mr-2 text-emerald-500" /> {targetId ? `Encrypted tunnel with ${currentDisplayName} established` : "End-to-End Encrypted Tunnel Active"}
                 </div>
               )}
-              {activeMessages.map((msg, idx) => (
-                <motion.div key={msg.id || `fallback-msg-${idx}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex w-full gap-3 ${msg.senderName === username ? "flex-row-reverse" : msg.isSystem ? "justify-center" : "flex-row"}`}>
-                  {!msg.isSystem && (
-                    <div onClick={() => setShowProfileDrawer(true)} className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1 bg-[#1e1f22] cursor-pointer hover:opacity-85 transition-all" title="View Profile">
-                      {(() => {
-                        // Use avatarCache (keyed by username) for reliable avatar lookup
-                        // Falls back to onlineUsers avatar, then senderName seed
-                        const senderLookupName = msg.senderUsername || msg.senderName;
-                        const fallbackAvatar = onlineUsers.find((u: any) => u.id === msg.senderId || u.username === senderLookupName)?.avatar;
-                        const msgAvatarSrc = getAvatarSrcLocal(senderLookupName, fallbackAvatar || msg.senderName);
-                        return <img src={msgAvatarSrc} className="w-full h-full object-cover rounded-full" />;
-                      })()}
-                    </div>
-                  )}
+              {visibleMessages.map((msg, idx) => {
+                const currentMsgDate = new Date(msg.timestamp || Date.now());
+                const prevMsgDate = idx > 0 ? new Date(visibleMessages[idx - 1].timestamp || Date.now()) : null;
+                const isNewDay = !prevMsgDate || currentMsgDate.toDateString() !== prevMsgDate.toDateString();
 
-                  {msg.isSystem ? (
-                    <div className="text-[10px] font-mono text-emerald-600 tracking-widest bg-emerald-950/20 px-4 py-2 rounded-full border border-emerald-900/50 uppercase my-4">
-                      {msg.text}
-                    </div>
-                  ) : (msg.isPaymentSlip || msg.slipData || (typeof msg.text === 'string' && msg.text.includes('[PAYMENT SLIP]'))) ? (
-                    <div className={`flex flex-col ${msg.senderName === username ? "items-end" : "items-start"} w-full max-w-[85%] md:max-w-[70%]`}>
-                      <div className="bg-[#0b1320] border-2 border-emerald-500/40 rounded-2xl p-4 shadow-[0_0_25px_rgba(16,185,129,0.15)] min-w-[260px] max-w-[320px] relative overflow-hidden font-sans">
-                        {/* Top PDF File Header Bar */}
-                        <div className="flex items-center justify-between bg-black/40 border border-white/10 rounded-xl p-2.5 mb-3">
-                          <div className="flex items-center gap-2.5 overflow-hidden">
-                            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0 text-emerald-400 font-bold">
-                              <Receipt className="w-4 h-4" />
-                            </div>
-                            <div className="overflow-hidden">
-                              <p className="text-white font-mono text-[11px] font-bold truncate">NEURAL_TRANSIT_RECEIPT.pdf</p>
-                              <p className="text-emerald-400 font-mono text-[9px] uppercase tracking-wider">PDF DOCUMENT • VERIFIED</p>
-                            </div>
-                          </div>
-                          <span className="text-[9px] bg-emerald-500/20 text-emerald-300 font-mono px-2 py-0.5 rounded-md border border-emerald-500/40 uppercase font-bold shrink-0">PDF</span>
-                        </div>
+                const formatMessageDateHeader = (d: Date) => {
+                  const today = new Date();
+                  const yesterday = new Date();
+                  yesterday.setDate(today.getDate() - 1);
+                  if (d.toDateString() === today.toDateString()) return "TODAY";
+                  if (d.toDateString() === yesterday.toDateString()) return "YESTERDAY";
+                  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: d.getFullYear() !== today.getFullYear() ? 'numeric' : undefined }).toUpperCase();
+                };
 
-                        {/* PDF Document Body Content */}
-                        <div className="bg-[#04070f] border border-white/5 rounded-xl p-3 space-y-2 font-mono text-[10px]">
-                          <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
-                            <span className="text-gray-500 uppercase">Route</span>
-                            <span className="text-white font-bold">@{msg.slipData?.from || msg.senderUsername || msg.senderName} ➔ @{msg.slipData?.to || msg.targetUsername}</span>
-                          </div>
-                          <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
-                            <span className="text-gray-500 uppercase">TxID</span>
-                            <span className="text-amber-400 font-bold">{msg.slipData?.txnId || msg.slipData?.txId || 'TXN-SETTLED'}</span>
-                          </div>
-                          {msg.slipData?.note && (
-                            <div className="flex justify-between items-start border-b border-white/5 pb-1.5">
-                              <span className="text-gray-500 uppercase">Memo</span>
-                              <span className="text-gray-300 text-right font-sans">{msg.slipData.note}</span>
-                            </div>
-                          )}
-                          <div className="pt-2 text-center">
-                            <span className="text-gray-400 text-[9px] uppercase block mb-0.5">Amount Settlement</span>
-                            <p className="text-3xl font-black text-emerald-400 font-mono tracking-tight">{(msg.slipData?.amount || 0).toLocaleString()} <span className="text-xs">LKR</span></p>
-                          </div>
-                        </div>
+                const isHighlighted = highlightedMsgId === String(msg.id);
 
-                        {/* PDF View / Inspect Button */}
-                        <div className="mt-3">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (onSelectReceipt) {
-                                onSelectReceipt({
-                                  txnId: msg.slipData?.txnId || msg.slipData?.txId || 'TXN-VERIFIED',
-                                  sender: msg.slipData?.from || msg.senderUsername || msg.senderName,
-                                  recipient: msg.slipData?.to || msg.targetUsername || username,
-                                  amount: msg.slipData?.amount || 0,
-                                  note: msg.slipData?.note || 'Neural Wallet Transit',
-                                  date: msg.slipData?.collectedAt || msg.timestamp || new Date().toISOString(),
-                                  status: 'COMPLETED'
-                                });
-                              }
-                            }}
-                            className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[10px] uppercase tracking-widest rounded-xl flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all cursor-pointer"
-                          >
-                            <Receipt className="w-4 h-4" /> 📄 VIEW / DOWNLOAD PDF RECEIPT
-                          </button>
-                        </div>
-
-                        <span className="text-[9px] text-gray-500 font-mono mt-2 block text-right">
-                          {msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                return (
+                  <div key={`msg-wrapper-${msg.id || idx}`} className="w-full">
+                    {isNewDay && (
+                      <div className="flex justify-center my-3 sticky top-1 z-10 select-none">
+                        <span className="px-3.5 py-1 rounded-full bg-[#0b1322]/90 border border-white/10 text-[10px] font-mono font-bold tracking-wider text-gray-300 uppercase shadow-md backdrop-blur-md">
+                          {formatMessageDateHeader(currentMsgDate)}
                         </span>
                       </div>
-                    </div>
-                  ) : (
-                    <div className={`w-full max-w-[85%] md:max-w-[70%] flex flex-col ${msg.senderName === username ? "items-end" : "items-start"}`}>
-                      <div className={`p-3 md:px-4 md:py-3 relative text-[14px] shadow-xl overflow-hidden break-all max-w-full pr-7 group/msg ${msg.senderName === username
-                        ? "bg-emerald-600 text-white rounded-2xl rounded-tr-sm"
-                        : msg.senderName === "AURA-OS"
-                          ? "bg-[#0f2a4a] border border-cyan-500/30 text-cyan-50 rounded-2xl rounded-tl-sm"
-                          : "bg-[#162032] border border-white/5 text-gray-200 rounded-2xl rounded-tl-sm"
-                        }`}>
-                        {msg.senderName !== username && !targetId && (
-                          <span className={`text-[10px] font-black uppercase tracking-tighter mb-1 block ${msg.senderName === "AURA-OS" ? "text-cyan-400" : "text-emerald-500"}`}>
-                            {msg.senderName}
-                          </span>
-                        )}
+                    )}
+                    <motion.div
+                      key={msg.id || `fallback-msg-${idx}`}
+                      ref={(el) => {
+                        if (el && msg.id) {
+                          messageRefs.current.set(String(msg.id), el);
+                        }
+                      }}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`flex w-full gap-3 transition-all duration-300 ${isHighlighted ? "scale-[1.02] ring-2 ring-emerald-400 rounded-2xl p-1 shadow-[0_0_35px_rgba(16,185,129,0.8)]" : ""} ${msg.senderName === username ? "flex-row-reverse" : msg.isSystem ? "justify-center" : "flex-row"}`}
+                    >
+                      {!msg.isSystem && (
+                        <div onClick={() => setShowProfileDrawer(true)} className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1 bg-[#1e1f22] cursor-pointer hover:opacity-85 transition-all" title="View Profile">
+                          {(() => {
+                            const senderLookupName = msg.senderUsername || msg.senderName;
+                            const fallbackAvatar = onlineUsers.find((u: any) => u.id === msg.senderId || u.username === senderLookupName)?.avatar;
+                            const msgAvatarSrc = getAvatarSrcLocal(senderLookupName, fallbackAvatar || msg.senderName);
+                            return <img src={msgAvatarSrc} className="w-full h-full object-cover rounded-full" />;
+                          })()}
+                        </div>
+                      )}
 
-                        {/* Action Menu Trigger */}
-                        <div className="absolute top-2 right-1.5 opacity-0 group-hover/msg:opacity-100 transition-opacity z-20">
-                          <button
-                            onClick={() => setActiveMessageMenuId(activeMessageMenuId === msg.id ? null : msg.id)}
-                            className="p-0.5 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition-all"
-                            title="Message Options"
-                          >
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          </button>
-                          {activeMessageMenuId === msg.id && (
-                            <>
-                              <div className="fixed inset-0 z-30" onClick={() => setActiveMessageMenuId(null)} />
-                              <div className={`absolute ${msg.senderName === username ? 'right-0' : 'left-0'} top-6 bg-[#0c1222]/95 border border-white/10 rounded-xl py-1 px-0.5 shadow-[0_4px_15px_rgba(0,0,0,0.6)] backdrop-blur-md z-40 min-w-[125px] font-mono text-[9px]`}>
-                                <button
-                                  onClick={() => {
-                                    setReplyingTo(msg);
-                                    setActiveMessageMenuId(null);
-                                  }}
-                                  className="w-full text-left px-2.5 py-1.5 hover:bg-white/5 text-emerald-400 hover:text-emerald-300 flex items-center gap-1 uppercase font-bold"
-                                >
-                                  Reply
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setMessages(prev => prev.filter(m => m.id !== msg.id));
-                                    setActiveMessageMenuId(null);
-                                  }}
-                                  className="w-full text-left px-2.5 py-1.5 hover:bg-white/5 text-rose-400 hover:text-rose-300 border-t border-white/5 flex items-center gap-1 uppercase font-bold"
-                                >
-                                  Delete for me
-                                </button>
-                                {msg.senderName === username && (
-                                  <button
-                                    onClick={() => {
-                                      socket?.emit("delete_message", { messageId: msg.id, forEveryone: true });
-                                      setActiveMessageMenuId(null);
-                                    }}
-                                    className="w-full text-left px-2.5 py-1.5 hover:bg-white/5 text-rose-500 hover:text-rose-400 border-t border-white/5 flex items-center gap-1 uppercase font-bold"
-                                  >
-                                    Delete for Everyone
-                                  </button>
-                                )}
+                      {msg.isSystem ? (
+                        <div className="text-[10px] font-mono text-emerald-600 tracking-widest bg-emerald-950/20 px-4 py-2 rounded-full border border-emerald-900/50 uppercase my-4">
+                          {msg.text}
+                        </div>
+                      ) : (msg.isPaymentSlip || msg.slipData || (typeof msg.text === 'string' && msg.text.includes('[PAYMENT SLIP]'))) ? (
+                        <div className={`flex flex-col ${msg.senderName === username ? "items-end" : "items-start"} w-full max-w-[85%] md:max-w-[70%]`}>
+                          <div className="bg-[#0b1320] border-2 border-emerald-500/40 rounded-2xl p-4 shadow-[0_0_25px_rgba(16,185,129,0.15)] min-w-[260px] max-w-[320px] relative font-sans">
+                            {/* Top PDF File Header Bar */}
+                            <div className="flex items-center justify-between bg-black/40 border border-white/10 rounded-xl p-2.5 mb-3">
+                              <div className="flex items-center gap-2.5 overflow-hidden">
+                                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0 text-emerald-400 font-bold">
+                                  <Receipt className="w-4 h-4" />
+                                </div>
+                                <div className="overflow-hidden">
+                                  <p className="text-white font-mono text-[11px] font-bold truncate">NEURAL_TRANSIT_RECEIPT.pdf</p>
+                                  <p className="text-emerald-400 font-mono text-[9px] uppercase tracking-wider">PDF DOCUMENT • VERIFIED</p>
+                                </div>
                               </div>
-                            </>
-                          )}
-                        </div>
-
-                        <div className="leading-relaxed break-all max-w-full overflow-hidden">
-                          {msg.replyToId && (
-                            <div className="mb-2 p-2 bg-black/20 border-l-4 border-emerald-500 rounded-md text-[10px] text-gray-400 leading-normal max-w-full truncate select-none border border-white/5">
-                              <span className="font-bold text-emerald-400 block mb-0.5 text-[9px] uppercase tracking-wider">
-                                {msg.replyToSender === username ? "You" : msg.replyToSender}
-                              </span>
-                              <span className="truncate block opacity-85">{msg.replyToText}</span>
+                              <span className="text-[9px] bg-emerald-500/20 text-emerald-300 font-mono px-2 py-0.5 rounded-md border border-emerald-500/40 uppercase font-bold shrink-0">PDF</span>
                             </div>
-                          )}
-                          {msg.isImage ? (
-                            <img src={msg.text} alt="Shared visual data" className="max-w-full max-h-60 rounded-xl mt-1 border border-white/10" />
-                          ) : msg.isVideo ? (
-                            <video src={msg.text} controls className="max-w-full max-h-60 rounded-xl mt-1 border border-white/10" />
-                          ) : (
-                            msg.text
-                          )}
-                          {msg.isStreaming && <span className={`inline-block w-2 h-4 ml-1 animate-pulse ${msg.senderName === "AURA-OS" ? "bg-cyan-400" : "bg-emerald-400"}`}></span>}
+
+                            {/* PDF Document Body Content */}
+                            <div className="bg-[#04070f] border border-white/5 rounded-xl p-3 space-y-2 font-mono text-[10px]">
+                              <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
+                                <span className="text-gray-500 uppercase">Route</span>
+                                <span className="text-white font-bold">@{msg.slipData?.from || msg.senderUsername || msg.senderName} ➔ @{msg.slipData?.to || msg.targetUsername}</span>
+                              </div>
+                              <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
+                                <span className="text-gray-500 uppercase">TxID</span>
+                                <span className="text-amber-400 font-bold">{msg.slipData?.txnId || msg.slipData?.txId || 'TXN-SETTLED'}</span>
+                              </div>
+                              {msg.slipData?.note && (
+                                <div className="flex justify-between items-start border-b border-white/5 pb-1.5">
+                                  <span className="text-gray-500 uppercase">Memo</span>
+                                  <span className="text-gray-300 text-right font-sans">{msg.slipData.note}</span>
+                                </div>
+                              )}
+                              <div className="pt-2 text-center">
+                                <span className="text-gray-400 text-[9px] uppercase block mb-0.5">Amount Settlement</span>
+                                <p className="text-3xl font-black text-emerald-400 font-mono tracking-tight">{(msg.slipData?.amount || 0).toLocaleString()} <span className="text-xs">LKR</span></p>
+                              </div>
+                            </div>
+
+                            {/* PDF View / Inspect Button */}
+                            <div className="mt-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (onSelectReceipt) {
+                                    onSelectReceipt({
+                                      txnId: msg.slipData?.txnId || msg.slipData?.txId || 'TXN-VERIFIED',
+                                      sender: msg.slipData?.from || msg.senderUsername || msg.senderName,
+                                      recipient: msg.slipData?.to || msg.targetUsername || username,
+                                      amount: msg.slipData?.amount || 0,
+                                      note: msg.slipData?.note || 'Neural Wallet Transit',
+                                      date: msg.slipData?.collectedAt || msg.timestamp || new Date().toISOString(),
+                                      status: 'COMPLETED'
+                                    });
+                                  }
+                                }}
+                                className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[10px] uppercase tracking-widest rounded-xl flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all cursor-pointer"
+                              >
+                                <Receipt className="w-4 h-4" /> 📄 VIEW / DOWNLOAD PDF RECEIPT
+                              </button>
+                            </div>
+
+                            <span className="text-[9px] text-gray-500 font-mono mt-2 block text-right">
+                              {msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
                         </div>
+                      ) : (
+                        <div className={`w-full max-w-[85%] md:max-w-[70%] flex flex-col ${msg.senderName === username ? "items-end" : "items-start"}`}>
+                          <div
+                            onTouchStart={(e) => handleTouchStart(e, msg)}
+                            onTouchMove={handleTouchMove}
+                            onTouchEnd={handleTouchEnd}
+                            onContextMenu={(e) => {
+                              if (typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
+                                e.preventDefault();
+                              }
+                            }}
+                            className={`p-3 md:px-4 md:py-3 relative text-[14px] shadow-xl break-all max-w-full pr-7 group/msg select-text touch-manipulation cursor-pointer ${msg.senderName === username
+                              ? "bg-emerald-600 text-white rounded-2xl rounded-tr-sm"
+                              : msg.senderName === "AURA-OS"
+                                ? "bg-[#0f2a4a] border border-cyan-500/30 text-cyan-50 rounded-2xl rounded-tl-sm"
+                                : "bg-[#162032] border border-white/5 text-gray-200 rounded-2xl rounded-tl-sm"
+                            }`}>
+                            {msg.senderName !== username && !targetId && (
+                              <span className={`text-[10px] font-black uppercase tracking-tighter mb-1 block ${msg.senderName === "AURA-OS" ? "text-cyan-400" : "text-emerald-500"}`}>
+                                {msg.senderName}
+                              </span>
+                            )}
+
+                            {/* Action Menu Trigger (Arrow) — always visible on mobile, hover on desktop */}
+                            <div className="absolute top-2 right-1.5 opacity-80 md:opacity-0 md:group-hover/msg:opacity-100 transition-opacity z-20">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                  const isOwn = msg.senderName === username;
+                                  setActiveMessageMenu(prev => prev?.id === msg.id ? null : {
+                                    id: msg.id,
+                                    msg: msg,
+                                    x: rect.left,
+                                    y: rect.bottom + 4,
+                                    isOwn
+                                  });
+                                }}
+                                className="p-1 rounded-full hover:bg-black/30 text-white/70 hover:text-white transition-all cursor-pointer"
+                                title="Message Options"
+                              >
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+
+                            <div className="leading-relaxed break-all max-w-full">
+                              {msg.replyToId && (
+                                <div
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (msg.replyToId) scrollToMessage(msg.replyToId);
+                                  }}
+                                  className="mb-2 p-2 bg-black/30 hover:bg-black/50 border-l-4 border-emerald-400 rounded-lg text-[10px] text-gray-300 leading-normal max-w-full truncate select-none border border-white/10 flex items-center justify-between gap-2 cursor-pointer transition-all hover:scale-[1.01] active:scale-[0.99] group/reply"
+                                  title="Click to jump to original message"
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <span className="font-bold text-emerald-400 block mb-0.5 text-[9px] uppercase tracking-wider group-hover/reply:underline">
+                                      {msg.replyToSender === username ? "You" : msg.replyToSender}
+                                    </span>
+                                    <span className="truncate block opacity-85 text-[11px] text-gray-200">
+                                      {msg.replyToIsImage || (typeof msg.replyToText === 'string' && (msg.replyToText.startsWith('data:image') || (msg.replyToText.startsWith('http') && !msg.isVideo))) ? (
+                                        <span className="flex items-center gap-1 text-emerald-300">
+                                          <ImageIcon className="w-3.5 h-3.5 inline" /> Photo
+                                        </span>
+                                      ) : (
+                                        msg.replyToText
+                                      )}
+                                    </span>
+                                  </div>
+                                  {(msg.replyToIsImage || (typeof msg.replyToText === 'string' && (msg.replyToText.startsWith('data:image') || (msg.replyToText.startsWith('http') && !msg.isVideo)))) && (
+                                    <div className="w-10 h-10 rounded-md overflow-hidden shrink-0 border border-white/20">
+                                      <img src={msg.replyToText} alt="Replied visual" className="w-full h-full object-cover" />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {msg.isImage ? (
+                                <img src={msg.text} alt="Shared visual data" className="max-w-full max-h-64 rounded-xl mt-1 object-cover" />
+                              ) : msg.isVideo ? (
+                                <video src={msg.text} controls className="max-w-full max-h-64 rounded-xl mt-1" />
+                              ) : (
+                                msg.text
+                              )}
+                              {msg.isStreaming && <span className={`inline-block w-2 h-4 ml-1 animate-pulse ${msg.senderName === "AURA-OS" ? "bg-cyan-400" : "bg-emerald-400"}`}></span>}
+                            </div>
+
+                        {/* Reaction Badges - WhatsApp style overlapping pill badge */}
+                        {msg.reactions && Object.keys(msg.reactions).length > 0 && (() => {
+                          const groups: Record<string, string[]> = {};
+                          Object.entries(msg.reactions).forEach(([uname, em]) => {
+                            const e = String(em);
+                            if (!groups[e]) groups[e] = [];
+                            groups[e].push(uname);
+                          });
+                          return (
+                            <div className="absolute -bottom-2.5 right-2 flex items-center gap-1 z-20">
+                              {Object.entries(groups).map(([emoji, reactors]) => {
+                                const iMine = reactors.includes(username);
+                                return (
+                                  <button
+                                    key={emoji}
+                                    type="button"
+                                    title={reactors.map(r => r === username ? "You" : r).join(", ")}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleToggleReaction(msg, emoji);
+                                    }}
+                                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[12px] shadow-lg font-sans transition-all duration-150 cursor-pointer select-none border backdrop-blur-md
+                                      ${iMine
+                                        ? "bg-[#0b1626] border-emerald-400 text-emerald-300 scale-105 shadow-[0_2px_8px_rgba(16,185,129,0.3)]"
+                                        : "bg-[#0b1626] border-white/20 text-white hover:border-emerald-400/60 hover:scale-105"
+                                      }`}
+                                  >
+                                    <span>{emoji}</span>
+                                    {reactors.length > 1 && <span className="text-[9px] font-bold ml-0.5">{reactors.length}</span>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
                         {msg.isLudoReady && (
                           <div className="mt-3">
                             <button
@@ -3681,7 +4026,9 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                     </div>
                   )}
                 </motion.div>
-              ))}
+              </div>
+            );
+          })}
               {isTargetTyping && (
                 <div key="typing-indicator" className="flex w-full gap-3 flex-row px-4 py-2">
                   <div className="w-8 h-8 rounded-full overflow-hidden border border-white/10 shrink-0 mt-1 bg-[#1e1f22]">
@@ -3845,15 +4192,22 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
                   initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 15 }}
-                  className="mb-3 mx-1 p-3 bg-[#111c2a] border-l-4 border-emerald-500 rounded-xl flex items-center justify-between text-xs text-gray-300 shadow-lg relative overflow-hidden"
+                  className="mb-3 mx-1 p-2.5 bg-[#111c2a] border-l-4 border-emerald-500 rounded-xl flex items-center justify-between text-xs text-gray-300 shadow-lg relative overflow-hidden"
                 >
-                  <div className="flex-1 min-w-0 pr-4 select-none">
-                    <p className="font-bold text-emerald-400 text-[10px] uppercase tracking-wider mb-0.5">
-                      Replying to {replyingTo.senderName === username ? "You" : replyingTo.senderName || replyingTo.sender}
-                    </p>
-                    <p className="truncate text-gray-400 text-xs font-mono">
-                      {replyingTo.text}
-                    </p>
+                  <div className="flex items-center gap-3 flex-1 min-w-0 pr-4 select-none">
+                    {(replyingTo.isImage || (typeof replyingTo.text === 'string' && (replyingTo.text.startsWith('data:image') || (replyingTo.text.startsWith('http') && !replyingTo.isVideo)))) && (
+                      <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0 border border-white/20">
+                        <img src={replyingTo.text} alt="Reply thumbnail" className="w-full h-full object-cover" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-emerald-400 text-[10px] uppercase tracking-wider mb-0.5">
+                        Replying to {replyingTo.senderName === username ? "You" : replyingTo.senderName || replyingTo.sender}
+                      </p>
+                      <p className="truncate text-gray-400 text-xs font-mono">
+                        {(replyingTo.isImage || (typeof replyingTo.text === 'string' && (replyingTo.text.startsWith('data:image') || (replyingTo.text.startsWith('http') && !replyingTo.isVideo)))) ? "📷 Photo" : replyingTo.text}
+                      </p>
+                    </div>
                   </div>
                   <button
                     onClick={() => setReplyingTo(null)}
@@ -3871,10 +4225,6 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
 
               <input type="file" ref={fileInputRef} accept="image/*,video/*" onChange={handleMediaUpload} className="hidden" />
               <button onClick={() => fileInputRef.current?.click()} className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-gray-400 transition-all" title="Share image/video"><ImageIcon className="w-5 h-5" /></button>
-
-              <button onClick={() => setShowPayModal(!showPayModal)} className="w-10 h-10 rounded-full hover:bg-amber-500/10 flex items-center justify-center text-amber-400 transition-all" title="Send Payment Transfer">
-                <span className="text-lg">💸</span>
-              </button>
 
               <input
                 type="text"
@@ -4185,6 +4535,110 @@ function MultiplayerChat({ socket, username, onlineCount, targetId, targetName, 
             </motion.div>
           )}
         </AnimatePresence>
+
+      {/* WhatsApp-Style Floating Message Options Dropdown Popover */}
+      {activeMessageMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-[90]"
+            onClick={() => setActiveMessageMenu(null)}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              top: Math.max(16, Math.min(activeMessageMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 800) - 240)),
+              left: Math.max(12, Math.min(
+                activeMessageMenu.isOwn
+                  ? activeMessageMenu.x - 170
+                  : Math.max(16, activeMessageMenu.x - 30),
+                (typeof window !== 'undefined' ? window.innerWidth : 400) - 220
+              )),
+            }}
+            className="bg-[#0c1222]/95 border border-white/10 rounded-2xl p-2 shadow-[0_10px_35px_rgba(0,0,0,0.8)] backdrop-blur-md z-[100] w-52 text-xs font-sans text-white animate-in fade-in zoom-in-95 duration-150"
+          >
+            {/* Quick React Emoji Bar */}
+            <div className="text-[10px] font-mono text-gray-400 uppercase px-2 pt-1 pb-1 font-bold">Quick React</div>
+            <div className="flex items-center justify-around pb-2 border-b border-white/10 px-1 mb-1">
+              {['👍', '❤️', '😂', '😮', '😢', '🙏'].map(emoji => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => {
+                    handleToggleReaction(activeMessageMenu.msg, emoji);
+                    setActiveMessageMenu(null);
+                  }}
+                  className="p-1 hover:scale-125 transition-transform text-lg rounded-lg hover:bg-white/10 cursor-pointer"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+
+            {/* Delete for me */}
+            <button
+              type="button"
+              onClick={() => {
+                handleDeleteForMe(activeMessageMenu.msg);
+                setActiveMessageMenu(null);
+              }}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-white/5 text-gray-200 hover:text-white flex items-center justify-between font-medium transition-all cursor-pointer"
+            >
+              <span>Delete for me</span>
+              <Trash2 className="w-3.5 h-3.5 text-gray-400" />
+            </button>
+
+            {/* Delete for everyone */}
+            <button
+              type="button"
+              onClick={() => {
+                handleDeleteForEveryone(activeMessageMenu.msg);
+                setActiveMessageMenu(null);
+              }}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-rose-500/10 text-rose-400 hover:text-rose-300 flex items-center justify-between font-medium transition-all cursor-pointer"
+            >
+              <span>Delete for everyone</span>
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+            </button>
+
+            {/* Reply */}
+            <button
+              type="button"
+              onClick={() => {
+                setReplyingTo(activeMessageMenu.msg);
+                setActiveMessageMenu(null);
+              }}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-white/5 text-emerald-400 hover:text-emerald-300 flex items-center justify-between font-medium transition-all border-t border-white/5 mt-1 pt-1.5 cursor-pointer"
+            >
+              <span>Reply</span>
+              <Reply className="w-3.5 h-3.5 text-emerald-400" />
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* 4-Second Undo Delete Snackbar */}
+      <AnimatePresence>
+        {undoSnackbar && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[120] bg-[#0c1322] border border-emerald-500/40 shadow-[0_0_25px_rgba(16,185,129,0.3)] px-5 py-3 rounded-2xl flex items-center gap-4 text-white text-xs font-sans"
+          >
+            <span>Message deleted for you ({undoSnackbar.countdown}s)</span>
+            <button
+              type="button"
+              onClick={() => {
+                setDeletedForMeIds(prev => prev.filter(id => id !== undoSnackbar.messageId));
+                setUndoSnackbar(null);
+              }}
+              className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase text-[10px] tracking-wider rounded-lg transition-all cursor-pointer"
+            >
+              UNDO
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
       </div>
     </div>
   );
@@ -4742,9 +5196,13 @@ function DigitalReceiptModal({
       >
         {/* Top-Right X Close Button */}
         <button 
-          onClick={onClose}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onClose();
+          }}
           type="button"
-          className="absolute top-5 right-5 p-2 bg-white/5 hover:bg-white/10 rounded-full transition-all text-gray-400 hover:text-white z-20"
+          className="absolute top-5 right-5 p-2 bg-white/5 hover:bg-white/10 rounded-full transition-all text-gray-400 hover:text-white z-20 cursor-pointer"
         >
           <X className="w-5 h-5" />
         </button>

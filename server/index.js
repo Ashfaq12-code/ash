@@ -337,6 +337,27 @@ io.on("connection", (socket) => {
         }
     });
 
+    socket.on("toggle_reaction", (data) => {
+        const { messageId, emoji, username } = data;
+        if (!messageId || !username) return;
+        const targetMsg = db.messages.find(m => String(m.id) === String(messageId));
+        if (targetMsg) {
+            if (!targetMsg.reactions) targetMsg.reactions = {};
+            if (targetMsg.reactions[username] === emoji) {
+                delete targetMsg.reactions[username];
+            } else {
+                targetMsg.reactions[username] = emoji;
+            }
+            saveDb();
+            console.log(`[REACTION BROADCAST] Msg: ${targetMsg.id}, user: ${username}, emoji: ${emoji}, all:`, targetMsg.reactions);
+            io.emit("message_reaction_updated", { messageId: targetMsg.id, reactions: { ...targetMsg.reactions }, emoji, username });
+        } else {
+            console.log(`[REACTION BROADCAST FALLBACK] Msg: ${messageId}, user: ${username}, emoji: ${emoji}`);
+            io.emit("message_reaction_updated", { messageId, emoji, username });
+        }
+    });
+
+
     socket.on("discord_qa_message", (data) => {
         io.emit("discord_qa_message_received", data);
     });
@@ -389,7 +410,8 @@ io.on("connection", (socket) => {
             timestamp: new Date(),
             replyToId: data.replyToId || null,
             replyToSender: data.replyToSender || null,
-            replyToText: data.replyToText || null
+            replyToText: data.replyToText || null,
+            replyToIsImage: !!data.replyToIsImage
         };
         db.messages.push(newMsg);
         saveDb();
