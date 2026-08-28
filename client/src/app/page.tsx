@@ -73,13 +73,16 @@ interface Message {
   roomId?: string;
   isPaymentSlip?: boolean;
   slipData?: {
-    amount: number;
-    from: string;
-    to: string;
+    amount?: number;
+    from?: string;
+    to?: string;
     note?: string;
-    txId: string;
-    timestamp: string;
+    txId?: string;
+    txnId?: string;
+    timestamp?: string;
     isCollected?: boolean;
+    collectedAt?: string;
+    [key: string]: any;
   };
   isLudoInvite?: boolean;
   ludoRoomId?: string;
@@ -89,6 +92,9 @@ interface Message {
   replyToIsImage?: boolean;
   ludoPlayerSlots?: string[];
   status?: string;
+  reactions?: Record<string, string>;
+  isEncrypted?: boolean;
+  [key: string]: any;
 }
 
 export default function App() {
